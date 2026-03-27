@@ -21,7 +21,7 @@ export default function OptionChain() {
   const {
     selectedSymbol, selectedExpiry, chain, spotPrices, chainLoading,
     basket, basketSize, setSymbol, setExpiry, addToBasket, fetchChainLtps,
-    applyChainSnapshot, token,
+    applyChainSnapshot, setExpiriesFromBackend, token,
   } = useStore()
 
   const spot    = spotPrices[selectedSymbol] || 0
@@ -88,6 +88,33 @@ export default function OptionChain() {
     restTimerRef.current = setInterval(fetchRestChain, REST_INTERVAL)
     return () => { if (restTimerRef.current) clearInterval(restTimerRef.current) }
   }, [selectedSymbol, selectedExpiry]) // eslint-disable-line
+
+  // ── FIX v5.3: Fetch REAL expiry list from backend on mount + symbol change ──
+  // The frontend's getExpiries() generates Mon-Fri days as placeholders.
+  // The backend knows the ACTUAL expiry dates from Kotak scrip master.
+  // We query /api/prices/expiries/{symbol} to get the real list, then call
+  // setExpiriesFromBackend() which replaces placeholder dates with real ones
+  // and auto-selects the nearest correct expiry.
+  const fetchRealExpiries = useCallback(async () => {
+    if (!selectedSymbol) return
+    try {
+      const authHeaders = token ? { Authorization: `Bearer ${token}` } : {}
+      const res = await fetch(`${API}/api/prices/expiries/${selectedSymbol}`, { headers: authHeaders })
+      if (!res.ok) return
+      const body = await res.json()
+      const expiries = body.expiries || []
+      if (expiries.length > 0) {
+        setExpiriesFromBackend(selectedSymbol, expiries)
+        console.log(`[EXPIRY] Got real expiries for ${selectedSymbol}:`, expiries)
+      }
+    } catch (e) {
+      console.warn('[EXPIRY] Could not fetch real expiries:', e)
+    }
+  }, [selectedSymbol, setExpiriesFromBackend, token])
+
+  useEffect(() => {
+    fetchRealExpiries()
+  }, [selectedSymbol]) // eslint-disable-line
 
   // ── Add to basket ──────────────────────────────────────────────────────────
   function add(row, optType, side) {
