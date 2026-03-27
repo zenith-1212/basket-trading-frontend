@@ -44,35 +44,36 @@ function toYmd(exp) {
 }
 
 /**
- * FIX: Generate upcoming expiries without assuming a fixed weekday.
- * Returns the next `count` Thursdays (or Wednesdays for SENSEX) as a
- * STARTING POINT — the real expiry list is corrected by chain_snapshot
- * from the backend which knows the actual expiry dates.
+ * FIX v5.3: Generate upcoming expiries without assuming a fixed weekday.
  *
- * For special weeks (budget, election, etc.) the backend will send
- * expiry_ymd with the real date and applyChainSnapshot corrects selectedExpiry.
+ * OLD (broken): generated only Thursdays — missed special expiries like
+ *   30-Mar-2026 (Monday, month-end) and 07-Apr-2026 (Tuesday, SENSEX-style).
+ *
+ * NEW: returns the next `count` calendar days starting from today as a
+ * PLACEHOLDER list. The real expiry list is always corrected by the backend
+ * via chain_snapshot (applyChainSnapshot) or via fetchRealExpiries().
+ *
+ * We also keep up to 4 Thursdays as a safety net so that normal weeks
+ * still work even before the backend responds.
  */
 export function getExpiries(symbol = 'NIFTY', count = 6) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
   const expiries = []
-  const months   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const seen     = new Set()
 
-  // For SENSEX: Wednesday (JS weekday 3); for others: Thursday (JS weekday 4)
-  const primaryDay = symbol === 'SENSEX' ? 3 : 4
-
-  // Start from TODAY (not tomorrow) — today might BE the expiry
+  // Start from today — today itself may be the expiry (same-day expiry until 3:30 PM IST)
   let d = new Date()
   d.setHours(0, 0, 0, 0)
 
-  const checked = new Set()
-  let safety = 0
-
-  while (expiries.length < count && safety < 300) {
-    safety++
-    if (d.getDay() === primaryDay) {
+  // Scan next 60 calendar days, collect Mon–Fri only (exchanges never expire on weekends)
+  // This ensures we catch ANY weekday expiry: Mon month-end, Tue special week, Thu normal, etc.
+  for (let i = 0; i < 60 && expiries.length < count; i++) {
+    const day = d.getDay()          // 0=Sun, 6=Sat
+    if (day >= 1 && day <= 5) {     // Mon–Fri only
       const str = `${String(d.getDate()).padStart(2,'0')}-${months[d.getMonth()]}-${d.getFullYear()}`
-      if (!checked.has(str)) {
+      if (!seen.has(str)) {
         expiries.push(str)
-        checked.add(str)
+        seen.add(str)
       }
     }
     d.setDate(d.getDate() + 1)
@@ -240,6 +241,50 @@ export const useStore = create((set, get) => ({
 
   setExpiry: (exp) => {
     set({ selectedExpiry: exp })
+  },
+
+  /**
+   * FIX v5.3: Called after fetching real expiries from backend.
+   * Merges backend expiry list into chain.expiries and selects the nearest
+   * real expiry — replacing the weekday-guessed placeholder list.
+   */
+  setExpiriesFromBackend: (symbol, expiriesFromBackend) => {
+    if (!symbol || !expiriesFromBackend || expiriesFromBackend.length === 0) return
+    set(s => {
+      if (s.selectedSymbol !== symbol) return s
+      const chain = { ...s.chain, options: { ...s.chain.options } }
+
+      const toMs = (e) => {
+        const p = e.split('-')
+        if (p.length === 3 && p[0].length === 2) {
+          const MON = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}
+          return new Date(parseInt(p[2]), MON[p[1]] || 0, parseInt(p[0])).getTime()
+        }
+        return 0
+      }
+
+      // Merge real backend expiries with any existing expiries that have live data
+      const backendSet = new Set(expiriesFromBackend)
+      const withData   = chain.expiries.filter(e =>
+        (chain.options[e] || []).some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
+      )
+      const merged = [...new Set([...expiriesFromBackend, ...withData])]
+      merged.sort((a, b) => toMs(a) - toMs(b))
+      chain.expiries = merged.length > 0 ? merged : expiriesFromBackend
+
+      // Pre-create empty slot for real expiries not yet loaded
+      for (const exp of expiriesFromBackend) {
+        if (!chain.options[exp]) chain.options[exp] = []
+      }
+
+      // Switch to first real expiry only if current selection is a stale placeholder
+      const currentIsReal = backendSet.has(s.selectedExpiry) ||
+        (chain.options[s.selectedExpiry] || []).some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
+      const newExpiry = currentIsReal ? s.selectedExpiry : (chain.expiries[0] || s.selectedExpiry)
+
+      console.log(`[EXPIRY] Real expiries for ${symbol}:`, chain.expiries, `→ ${newExpiry}`)
+      return { chain, selectedExpiry: newExpiry }
+    })
   },
 
   initChain: () => {
