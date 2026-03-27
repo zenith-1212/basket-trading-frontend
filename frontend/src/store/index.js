@@ -57,14 +57,17 @@ export function getExpiries(symbol = 'NIFTY', count = 6) {
   const months   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 
   // For SENSEX: Wednesday (JS weekday 3); for others: Thursday (JS weekday 4)
-  // But also check every day in the next 3 weeks for special expiries
   const primaryDay = symbol === 'SENSEX' ? 3 : 4
 
+  // Start from TODAY (not tomorrow) — today might BE the expiry
   let d = new Date()
-  d.setDate(d.getDate() + 1)   // start from tomorrow
-  const checked = new Set()
+  d.setHours(0, 0, 0, 0)
 
-  while (expiries.length < count) {
+  const checked = new Set()
+  let safety = 0
+
+  while (expiries.length < count && safety < 300) {
+    safety++
     if (d.getDay() === primaryDay) {
       const str = `${String(d.getDate()).padStart(2,'0')}-${months[d.getMonth()]}-${d.getFullYear()}`
       if (!checked.has(str)) {
@@ -73,7 +76,6 @@ export function getExpiries(symbol = 'NIFTY', count = 6) {
       }
     }
     d.setDate(d.getDate() + 1)
-    if (checked.size > 200) break  // safety
   }
   return expiries
 }
@@ -290,9 +292,22 @@ export const useStore = create((set, get) => ({
           loading: false,
         }))
 
-        // Add to expiry list, keeping it sorted
+      // Add to expiry list, keeping it sorted by real date
         if (!chain.expiries.includes(targetExpiry)) {
-          chain.expiries = [targetExpiry, ...chain.expiries.filter(e => e !== targetExpiry)]
+          const allExp = [...chain.expiries.filter(e => e !== targetExpiry), targetExpiry]
+          // Sort by actual date value
+          allExp.sort((a, b) => {
+            const toMs = (e) => {
+              const p = e.split('-')
+              if (p.length === 3 && p[0].length === 2) {
+                const MON = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}
+                return new Date(parseInt(p[2]), MON[p[1]] || 0, parseInt(p[0])).getTime()
+              }
+              return 0
+            }
+            return toMs(a) - toMs(b)
+          })
+          chain.expiries = allExp
         }
       }
 
@@ -414,20 +429,17 @@ export const useStore = create((set, get) => ({
     const API = import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
     const ymd = toYmd(expiry)
 
-    // Build candidates including the requested expiry + next few Thursdays
-    const weekday = symbol === 'SENSEX' ? 3 : 4
+    // Try the requested expiry first, then scan every day for next 14 days
+    // (NIFTY/BANKNIFTY can expire on any weekday for special weeks)
     const candidates = [ymd]
     const probe = new Date()
-    probe.setDate(probe.getDate() + 1)
-    let found = 0
-    while (found < 4) {
-      if (probe.getDay() === weekday) {
-        const yr = probe.getFullYear()
-        const mo = String(probe.getMonth() + 1).padStart(2,'0')
-        const dd = String(probe.getDate()).padStart(2,'0')
-        const candidate = `${yr}-${mo}-${dd}`
-        if (candidate !== ymd) { candidates.push(candidate); found++ }
-      }
+    probe.setHours(0, 0, 0, 0)
+    for (let i = 0; i < 45; i++) {
+      const yr = probe.getFullYear()
+      const mo = String(probe.getMonth() + 1).padStart(2,'0')
+      const dd = String(probe.getDate()).padStart(2,'0')
+      const c  = `${yr}-${mo}-${dd}`
+      if (c !== ymd && !candidates.includes(c)) candidates.push(c)
       probe.setDate(probe.getDate() + 1)
     }
 
