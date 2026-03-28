@@ -4,7 +4,7 @@
  * FIX #3: "Edit Order" button — allows modifying limit price / SL on active orders.
  * FIX #4: Exit now calls POST /api/orders/exit_basket to square off in demat.
  */
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { useStore } from '../store'
 import toast from 'react-hot-toast'
 
@@ -127,6 +127,12 @@ function EditOrderModal({ order, token, onClose, onSave }) {
 function EditTargetsModal({ basket, onClose, onSave }) {
   const [profit, setProfit] = useState(String(basket.lockedProfit || 0))
   const [loss,   setLoss]   = useState(String(basket.lockedLoss   || 0))
+  const sheetRef = React.useRef(null)
+
+  // Scroll sheet to top on mount so TARGET PROFIT is always visible
+  React.useEffect(() => {
+    if (sheetRef.current) sheetRef.current.scrollTop = 0
+  }, [])
 
   function save() {
     const p = parseFloat(profit)
@@ -149,7 +155,7 @@ function EditTargetsModal({ basket, onClose, onSave }) {
       display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 9999,
     }} onClick={onClose}>
       {/* Bottom-sheet: maxHeight + overflowY so it never clips on small screens */}
-      <div style={{
+      <div ref={sheetRef} style={{
         background: 'var(--bg-white)', borderRadius: '14px 14px 0 0',
         padding: '16px 18px 28px', width: '100%', maxWidth: 480,
         boxShadow: '0 -4px 32px rgba(0,0,0,0.18)', border: '1px solid var(--border)',
@@ -187,7 +193,6 @@ function EditTargetsModal({ basket, onClose, onSave }) {
               value={profit}
               onChange={e => setProfit(e.target.value)}
               onKeyDown={handleKey}
-              autoFocus
               style={{
                 flex: 1, fontSize: 20, fontFamily: 'var(--mono)', fontWeight: 700,
                 padding: '10px 12px 10px 0', border: 'none', outline: 'none',
