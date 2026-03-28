@@ -385,12 +385,27 @@ export const useStore = create((set, get) => ({
       const tokenMap = buildTokenMap(chain.options)
       console.log(`[SNAPSHOT] ${Object.keys(ltpMap).length} strikes applied (${symbol} ${targetExpiry})`)
 
+      // FIX v5.3: Decide whether to update selectedExpiry.
+      // Only switch to targetExpiry when:
+      //   (a) selectedExpiry is blank (true cold start), OR
+      //   (b) selectedExpiry has zero real price data AND targetExpiry has more strikes
+      //       (first real data arriving from WS/REST on cold start)
+      // Do NOT override once user or setExpiriesFromBackend has chosen a dated expiry
+      // that already has price data — that was the root cause of the flip-flop loop.
+      const curRows    = chain.options[s.selectedExpiry] || []
+      const curHasData = curRows.some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
+      const tgtRows    = chain.options[targetExpiry] || []
+      const tgtHasMore = tgtRows.length > curRows.length
+
+      // Only switch expiry when selected one is truly empty (no data at all)
+      const shouldUpdateExpiry = !s.selectedExpiry || !curHasData
+      const resolvedExpiry     = shouldUpdateExpiry ? targetExpiry : s.selectedExpiry
+
       const newState = {
         chain,
         chainLoading: false,
         tokenMap,
-        // FIX: update selectedExpiry to the REAL expiry from engine
-        selectedExpiry: targetExpiry,
+        selectedExpiry: resolvedExpiry,
       }
 
       // Apply pending snapshot prices
