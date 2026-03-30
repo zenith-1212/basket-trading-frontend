@@ -54,6 +54,8 @@ export default function BasketBuilder() {
               order_type:  'MKT',
               product:     'MIS',
               trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
+              ltp:         o.entry_price || 0,
+              price:       o.entry_price || 0,
             })),
           }),
         })
