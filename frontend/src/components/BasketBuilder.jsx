@@ -54,8 +54,6 @@ export default function BasketBuilder() {
               order_type:  'MKT',
               product:     'MIS',
               trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
-              ltp:         o.entry_price || 0,
-              price:       o.entry_price || 0,
             })),
           }),
         })
@@ -80,12 +78,15 @@ export default function BasketBuilder() {
         }
 
         // Add to active baskets with real order IDs
+        // IMPORTANT: store trd_symbol from backend result (scrip-search corrected)
+        // so that WS set_basket subscription uses the EXACT symbol the exchange knows
         addActiveBasket({
           id:           Date.now().toString(),
           symbol:       selectedSymbol,
           orders:       basket.map((o, i) => ({
             ...o,
-            order_id: data.results[i]?.order_id || '',
+            order_id:   data.results[i]?.order_id       || '',
+            trd_symbol: data.results[i]?.trading_symbol || o.trd_symbol || '',
           })),
           lockedProfit, lockedLoss, autoLoop,
           pnl:          0,
