@@ -11,6 +11,7 @@ export default function BasketBuilder() {
     lockedProfit, lockedLoss, autoLoop, setLockedProfit, setLockedLoss, setAutoLoop,
     addActiveBasket, isLive, selectedSymbol, token,
     liveBalance, setLiveBalance,
+    basketPrices,
   } = useStore()
 
   const [placing, setPlacing] = useState(false)
@@ -44,17 +45,24 @@ export default function BasketBuilder() {
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
-            orders: basket.map(o => ({
-              symbol:      o.symbol,
-              strike:      o.strike,
-              option_type: o.option_type,
-              expiry:      o.expiry,
-              side:        o.side,
-              quantity:    o.quantity,
-              order_type:  'MKT',
-              product:     'MIS',
-              trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
-            })),
+            orders: basket.map(o => {
+              // Always use the freshest live price from basketPrices (real-time WS tick).
+              // Falls back to the click-time entry_price if WS hasn't delivered a tick yet.
+              const liveLtp = basketPrices[o.trd_symbol] || o.entry_price || 0
+              return {
+                symbol:      o.symbol,
+                strike:      o.strike,
+                option_type: o.option_type,
+                expiry:      o.expiry,
+                side:        o.side,
+                quantity:    o.quantity,
+                order_type:  'MKT',
+                product:     'MIS',
+                trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
+                ltp:         liveLtp,
+                price:       liveLtp,
+              }
+            }),
           }),
         })
 
@@ -78,15 +86,14 @@ export default function BasketBuilder() {
         }
 
         // Add to active baskets with real order IDs
-        // IMPORTANT: store trd_symbol from backend result (scrip-search corrected)
-        // so that WS set_basket subscription uses the EXACT symbol the exchange knows
+        // entry_price is set to the live LTP at execution time for accurate P&L baseline
         addActiveBasket({
           id:           Date.now().toString(),
           symbol:       selectedSymbol,
           orders:       basket.map((o, i) => ({
             ...o,
-            order_id:   data.results[i]?.order_id       || '',
-            trd_symbol: data.results[i]?.trading_symbol || o.trd_symbol || '',
+            entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+            order_id:    data.results[i]?.order_id || '',
           })),
           lockedProfit, lockedLoss, autoLoop,
           pnl:          0,
@@ -111,7 +118,10 @@ export default function BasketBuilder() {
       addActiveBasket({
         id:          Date.now().toString(),
         symbol:      selectedSymbol,
-        orders:      basket.map(o => ({ ...o })),
+        orders:      basket.map(o => ({
+          ...o,
+          entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+        })),
         lockedProfit, lockedLoss, autoLoop,
         pnl:         0, status: 'ACTIVE', loop: 1,
         entryTime:   new Date().toLocaleTimeString('en-IN'),
