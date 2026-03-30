@@ -1,8 +1,9 @@
 /**
- * ActiveBaskets.jsx — v2.0
+ * ActiveBaskets.jsx — v2.1
  * =========================
  * FIX #3: "Edit Order" button — allows modifying limit price / SL on active orders.
  * FIX #4: Exit now calls POST /api/orders/exit_basket to square off in demat.
+ * FIX #5: Exit orders now include live LTP (from basketPrices) so price is never ₹0.
  */
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -267,7 +268,7 @@ function EditTargetsModal({ basket, onClose, onSave }) {
 
 // ── Basket Card ───────────────────────────────────────────────────────────────
 function BasketCard({ basket, index }) {
-  const { closeBasket, adjustBalance, addHistory, isLive, token, updateBasketTargets } = useStore()
+  const { closeBasket, adjustBalance, addHistory, isLive, token, updateBasketTargets, basketPrices } = useStore()
   const [exiting,      setExiting]      = useState(false)
   const [editOrder,    setEditOrder]    = useState(null)   // FIX #3
   const [editTargets,  setEditTargets]  = useState(false)  // FIX: profit ₹ edit
@@ -299,8 +300,8 @@ function BasketCard({ basket, index }) {
           body: JSON.stringify({
             basket_id: basket.id,
             orders: basket.orders.map(o => {
-              // Get current live LTP from basketPrices for this symbol
-              const currentLtp = useStore.getState().basketPrices[o.trd_symbol] || o.entry_price || 0
+              // FIX #5: always use live LTP from basketPrices so price is never ₹0
+              const liveLtp = basketPrices[o.trd_symbol] || o.entry_price || 0
               return {
                 symbol:      o.symbol,
                 strike:      o.strike,
@@ -312,8 +313,8 @@ function BasketCard({ basket, index }) {
                 product:     o.product || 'MIS',
                 trd_symbol:  o.trd_symbol || '',
                 order_id:    o.order_id  || '',
-                ltp:         currentLtp,
-                price:       currentLtp,
+                ltp:         liveLtp,
+                price:       liveLtp,
               }
             }),
           }),
