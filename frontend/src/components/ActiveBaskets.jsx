@@ -298,18 +298,24 @@ function BasketCard({ basket, index }) {
           },
           body: JSON.stringify({
             basket_id: basket.id,
-            orders: basket.orders.map(o => ({
-              symbol:      o.symbol,
-              strike:      o.strike,
-              option_type: o.option_type,
-              expiry:      o.expiry,
-              side:        o.side,
-              quantity:    o.quantity,
-              order_type:  'MKT',
-              product:     o.product || 'MIS',
-              trd_symbol:  o.trd_symbol || '',
-              order_id:    o.order_id  || '',
-            })),
+            orders: basket.orders.map(o => {
+              // Get current live LTP from basketPrices for this symbol
+              const currentLtp = useStore.getState().basketPrices[o.trd_symbol] || o.entry_price || 0
+              return {
+                symbol:      o.symbol,
+                strike:      o.strike,
+                option_type: o.option_type,
+                expiry:      o.expiry,
+                side:        o.side,
+                quantity:    o.quantity,
+                order_type:  'MKT',
+                product:     o.product || 'MIS',
+                trd_symbol:  o.trd_symbol || '',
+                order_id:    o.order_id  || '',
+                ltp:         currentLtp,
+                price:       currentLtp,
+              }
+            }),
           }),
         })
 
