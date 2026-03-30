@@ -395,26 +395,51 @@ export const useStore = create((set, get) => ({
       const curRows    = chain.options[s.selectedExpiry] || []
       const curHasData = curRows.some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
 
-      // Check if current selectedExpiry is today or already expired
-      const isExpiredOrToday = (() => {
+      // isStrictlyExpired: today or past BUT only counts as "expired placeholder"
+      // when there's no real price data for it. This way:
+      //   - SENSEX: today placeholder (no real data) → treated as expired → advance ✓
+      //   - NIFTY expiry day: today with real data → NOT treated as expired → keep ✓
+      const isExpiredPlaceholder = (() => {
         if (!s.selectedExpiry) return true
         try {
           const p = s.selectedExpiry.split('-')
           if (p.length === 3 && p[0].length === 2) {
             const MON = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}
-            const expMs = new Date(parseInt(p[2]), MON[p[1]] || 0, parseInt(p[0])).getTime()
+            const expMs   = new Date(parseInt(p[2]), MON[p[1]] || 0, parseInt(p[0])).getTime()
             const todayMs = new Date(new Date().setHours(0,0,0,0)).getTime()
-            return expMs <= todayMs
+            const isPastOrToday = expMs <= todayMs
+            // Only treat as expired if it's in the past OR (today AND no real data)
+            return expMs < todayMs || (isPastOrToday && !curHasData)
           }
         } catch {}
         return false
       })()
 
-      // Only switch expiry when selected one is empty, has no data, OR is expired/today
-      const shouldUpdateExpiry = !s.selectedExpiry || !curHasData || isExpiredOrToday
+      // Only advance expiry when targetExpiry is actually later than selectedExpiry
+      // (prevents a stale snapshot from an older expiry flipping us backwards)
+      const targetIsLater = (() => {
+        try {
+          const toMs = (e) => {
+            const p = e.split('-')
+            if (p.length === 3 && p[0].length === 2) {
+              const MON = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}
+              return new Date(parseInt(p[2]), MON[p[1]] || 0, parseInt(p[0])).getTime()
+            }
+            return 0
+          }
+          return toMs(targetExpiry) > toMs(s.selectedExpiry)
+        } catch {}
+        return false
+      })()
+
+      // Switch expiry when:
+      //   (a) selectedExpiry is blank (cold start)
+      //   (b) current expiry has no real price data yet (placeholder)
+      //   (c) current expiry is an expired/today placeholder AND targetExpiry is later
+      const shouldUpdateExpiry = !s.selectedExpiry || !curHasData || (isExpiredPlaceholder && targetIsLater)
       const resolvedExpiry     = shouldUpdateExpiry ? targetExpiry : s.selectedExpiry
 
-      if (isExpiredOrToday && s.selectedExpiry !== targetExpiry) {
+      if (isExpiredPlaceholder && targetIsLater && s.selectedExpiry !== targetExpiry) {
         console.log(`[EXPIRY] Auto-advancing from expired ${s.selectedExpiry} → ${targetExpiry}`)
       }
 
