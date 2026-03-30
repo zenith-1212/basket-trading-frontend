@@ -1,8 +1,8 @@
 /**
- * usePriceFeed.js — v5.1  (FIX #2: basket price subscription persistence)
+ * usePriceFeed.js — v5.2  (FIX #5: immediate WS subscribe on basket placement)
  * =========================================================================
  *
- * FIX #2 — Live basket P&L stops updating when switching instruments
+ * FIX #2 (v5.1) — Live basket P&L stops updating when switching instruments
  * ──────────────────────────────────────────────────────────────────
  * PROBLEM: When user places a NIFTY basket then switches to SENSEX chain,
  * the frontend sends `set_index SENSEX`. The backend updates its view but
@@ -21,6 +21,22 @@
  *    backend with active basket trd_symbols. This ensures the backend
  *    re-subscribes those tokens to the Dhan feed and they keep ticking.
  *    Also re-send on WS reconnect so subscriptions survive disconnections.
+ *
+ * FIX #5 (v5.2) — Deep ATM orders outside ±15 WebSocket range get real-time ticks
+ * ──────────────────────────────────────────────────────────────────────────────────
+ * PROBLEM: When placing a basket at a strike that falls outside the backend's
+ * current ±15 ATM window, that token was not subscribed to the Dhan WebSocket.
+ * Price updates would only arrive via the 4-second REST fallback, causing:
+ *  - Delayed P&L updates (up to 4s lag)
+ *  - Inaccurate live basket P&L that doesn't match expected values
+ *
+ * FIX:
+ *  When activeBaskets changes, diff against previous value to find NEWLY placed
+ *  baskets. Immediately send `set_basket` with their specific trd_symbols BEFORE
+ *  any ATM window shift can exclude them. This ensures:
+ *  1. Traded tokens are WebSocket-subscribed the instant the basket is placed
+ *  2. P&L starts updating in real-time from the first tick
+ *  3. No dependency on REST polling for active position prices
  *
  * All v5.0 fixes retained.
  *
@@ -122,10 +138,49 @@ export function usePriceFeed() {
     }))
   }, [selectedExpiry]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // FIX: when new baskets are added (live trade placed), subscribe their tokens
+  // ── FIX #2: Track previous active baskets to detect newly placed ones ───────
+  const prevBasketsRef = useRef([])
+
+  // FIX: when new baskets are added (live trade placed), IMMEDIATELY subscribe
+  // those specific traded tokens as highest-priority basket tokens.
+  // This fires before the backend's ATM window shift can drop them.
   useEffect(() => {
     if (!connectedRef.current || !wsRef.current) return
-    sendBasketTokens(wsRef.current)
+    const ws = wsRef.current
+
+    const prev    = prevBasketsRef.current
+    const current = basketsRef.current
+
+    // Detect newly added baskets (by id)
+    const prevIds = new Set(prev.map(b => b.id))
+    const newBaskets = current.filter(b => !prevIds.has(b.id))
+
+    if (newBaskets.length > 0 && ws.readyState === WebSocket.OPEN) {
+      // Collect all trd_symbols from the newly placed baskets
+      const newTokens = []
+      for (const b of newBaskets) {
+        for (const order of b.orders || []) {
+          const t = order.trd_symbol || ''
+          if (t && !newTokens.includes(t)) newTokens.push(t)
+        }
+      }
+
+      if (newTokens.length > 0) {
+        try {
+          // Send immediately as basket tokens — highest WS priority
+          ws.send(JSON.stringify({
+            type:        'set_basket',
+            instruments: newTokens.map(t => ({ trd_symbol: t })),
+          }))
+          console.log(`[WS] NEW BASKET: immediately subscribed ${newTokens.length} tokens:`, newTokens)
+        } catch {}
+      }
+    }
+
+    // Also do a full re-send to keep all basket tokens subscribed
+    sendBasketTokens(ws)
+
+    prevBasketsRef.current = current
   }, [activeBaskets]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // FIX: subscribe/unsubscribe IMMEDIATELY when user adds/removes from staging basket.
