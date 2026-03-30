@@ -385,21 +385,38 @@ export const useStore = create((set, get) => ({
       const tokenMap = buildTokenMap(chain.options)
       console.log(`[SNAPSHOT] ${Object.keys(ltpMap).length} strikes applied (${symbol} ${targetExpiry})`)
 
-      // FIX v5.3: Decide whether to update selectedExpiry.
-      // Only switch to targetExpiry when:
-      //   (a) selectedExpiry is blank (true cold start), OR
-      //   (b) selectedExpiry has zero real price data AND targetExpiry has more strikes
-      //       (first real data arriving from WS/REST on cold start)
-      // Do NOT override once user or setExpiriesFromBackend has chosen a dated expiry
-      // that already has price data — that was the root cause of the flip-flop loop.
+      // FIX v5.4: Decide whether to update selectedExpiry.
+      // Switch to targetExpiry when ANY of:
+      //   (a) selectedExpiry is blank (cold start)
+      //   (b) selectedExpiry has zero real price data (placeholder not yet loaded)
+      //   (c) selectedExpiry is today or in the past (expired) — this was the SENSEX bug:
+      //       getExpiries() generated today's date as placeholder, BS prices made curHasData=true,
+      //       so we never switched to the real next expiry (e.g. 30-Mar→02-Apr for SENSEX)
       const curRows    = chain.options[s.selectedExpiry] || []
       const curHasData = curRows.some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
-      const tgtRows    = chain.options[targetExpiry] || []
-      const tgtHasMore = tgtRows.length > curRows.length
 
-      // Only switch expiry when selected one is truly empty (no data at all)
-      const shouldUpdateExpiry = !s.selectedExpiry || !curHasData
+      // Check if current selectedExpiry is today or already expired
+      const isExpiredOrToday = (() => {
+        if (!s.selectedExpiry) return true
+        try {
+          const p = s.selectedExpiry.split('-')
+          if (p.length === 3 && p[0].length === 2) {
+            const MON = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}
+            const expMs = new Date(parseInt(p[2]), MON[p[1]] || 0, parseInt(p[0])).getTime()
+            const todayMs = new Date(new Date().setHours(0,0,0,0)).getTime()
+            return expMs <= todayMs
+          }
+        } catch {}
+        return false
+      })()
+
+      // Only switch expiry when selected one is empty, has no data, OR is expired/today
+      const shouldUpdateExpiry = !s.selectedExpiry || !curHasData || isExpiredOrToday
       const resolvedExpiry     = shouldUpdateExpiry ? targetExpiry : s.selectedExpiry
+
+      if (isExpiredOrToday && s.selectedExpiry !== targetExpiry) {
+        console.log(`[EXPIRY] Auto-advancing from expired ${s.selectedExpiry} → ${targetExpiry}`)
+      }
 
       const newState = {
         chain,
