@@ -172,17 +172,32 @@ export default function BasketBuilder() {
             }}>↻ Load Balance</button>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 3 }}>
-          <span style={{ fontSize: 10, color: 'var(--text3)', alignSelf: 'center', marginRight: 2 }}>SIZE</span>
-          {[2, 4, 6, 8, 10, 12].map(s => (
-            <button key={s} onClick={() => setBasketSize(s)} style={{
-              flex: 1, padding: '4px 0', borderRadius: 4, border: '1px solid',
-              borderColor: basketSize === s ? 'var(--blue)' : 'var(--border)',
-              background:  basketSize === s ? 'var(--blue-dim)' : '#fff',
-              color:       basketSize === s ? 'var(--blue)' : 'var(--text2)',
-              fontSize: 12, fontWeight: 600, cursor: 'pointer', touchAction: 'manipulation',
-            }}>{s}</button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 10, color: 'var(--text3)', marginRight: 2 }}>SIZE</span>
+          <button
+            onClick={() => setBasketSize(Math.max(1, basketSize - 1))}
+            style={{
+              width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)',
+              background: '#fff', color: 'var(--text2)', fontSize: 18, fontWeight: 700,
+              cursor: 'pointer', touchAction: 'manipulation', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+              flexShrink: 0,
+            }}
+          >−</button>
+          <span style={{
+            minWidth: 32, textAlign: 'center', fontSize: 14, fontWeight: 700,
+            color: 'var(--blue)', fontFamily: 'var(--mono)',
+          }}>{basketSize}</span>
+          <button
+            onClick={() => setBasketSize(basketSize + 1)}
+            style={{
+              width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)',
+              background: '#fff', color: 'var(--text2)', fontSize: 18, fontWeight: 700,
+              cursor: 'pointer', touchAction: 'manipulation', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+              flexShrink: 0,
+            }}
+          >+</button>
         </div>
       </div>
 
