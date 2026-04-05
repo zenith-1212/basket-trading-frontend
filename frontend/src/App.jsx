@@ -97,10 +97,13 @@ function MobileTerminal() {
 function AppInner() {
   usePriceFeed()
   useBasketMonitor()
-  const { activeTab, initChain } = useStore()
+  const { activeTab, initChain, fetchActiveBaskets } = useStore()
   const isMobile = useIsMobile()
 
-  useEffect(() => { initChain() }, [])
+  useEffect(() => {
+    initChain()
+    fetchActiveBaskets()   // restore active trades from DB on every page load
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isMobile) {
     return (
