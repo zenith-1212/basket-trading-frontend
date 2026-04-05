@@ -617,11 +617,85 @@ export const useStore = create((set, get) => ({
   setLockedLoss:   (v) => set({ lockedLoss: v }),
   setAutoLoop:     (v) => set({ autoLoop: v }),
 
-  activeBaskets:   [],
-  addActiveBasket:      (b)           => set(s => ({ activeBaskets: [...s.activeBaskets, b] })),
-  updateBasketPnl:      (id, pnl)     => set(s => ({ activeBaskets: s.activeBaskets.map(b => b.id === id ? { ...b, pnl } : b) })),
-  updateBasketTargets:  (id, profit, loss) => set(s => ({ activeBaskets: s.activeBaskets.map(b => b.id === id ? { ...b, lockedProfit: profit, lockedLoss: loss } : b) })),
-  closeBasket:          (id)          => set(s => ({ activeBaskets: s.activeBaskets.filter(b => b.id !== id) })),
+  // ── Active baskets (persisted in Supabase, restored on reload) ────────────
+  activeBaskets:        [],
+  basketsLoading:       false,   // true while fetching from DB on mount
+  basketsLoadError:     null,
+
+  addActiveBasket: (b) => set(s => {
+    // Guard: never add a basket whose DB id already exists in store
+    if (b.id && s.activeBaskets.some(x => x.id === b.id)) return s
+    return { activeBaskets: [...s.activeBaskets, b] }
+  }),
+
+  setActiveBaskets: (baskets) => set({ activeBaskets: baskets }),
+
+  updateBasketPnl: (id, pnl) => set(s => ({
+    activeBaskets: s.activeBaskets.map(b => b.id === id ? { ...b, pnl } : b),
+  })),
+
+  updateBasketTargets: (id, profit, loss) => set(s => ({
+    activeBaskets: s.activeBaskets.map(b =>
+      b.id === id ? { ...b, lockedProfit: profit, lockedLoss: loss } : b
+    ),
+  })),
+
+  closeBasket: (id) => set(s => ({
+    activeBaskets: s.activeBaskets.filter(b => b.id !== id),
+  })),
+
+  /**
+   * fetchActiveBaskets — called on app mount (AppInner useEffect).
+   * Loads all ACTIVE baskets from Supabase so trades survive page refresh.
+   * Skips baskets already in store (reconnect-safe, no duplicates).
+   */
+  fetchActiveBaskets: async () => {
+    const { token, activeBaskets, addActiveBasket } = get()
+    if (!token) return
+    const API = import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
+    set({ basketsLoading: true, basketsLoadError: null })
+    try {
+      const res = await fetch(`${API}/api/baskets/active`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const rows = await res.json()
+      const existingIds = new Set(activeBaskets.map(b => b.id))
+      rows.forEach(row => {
+        if (existingIds.has(row.id)) return  // already in store
+        addActiveBasket({
+          id:           row.id,
+          symbol:       row.orders?.[0]?.symbol || 'UNKNOWN',
+          orders:       (row.orders || []).map(o => ({
+            symbol:      o.symbol,
+            strike:      o.strike,
+            option_type: o.option_type,
+            expiry:      o.expiry,
+            side:        o.side,
+            quantity:    o.quantity,
+            entry_price: parseFloat(o.entry_price) || 0,
+            trd_symbol:  o.trd_symbol || '',
+            order_id:    o.order_id  || '',
+          })),
+          lockedProfit: parseFloat(row.locked_profit) || 0,
+          lockedLoss:   parseFloat(row.locked_loss)   || 0,
+          autoLoop:     row.auto_loop ?? true,
+          pnl:          parseFloat(row.current_pnl)   || 0,
+          status:       'ACTIVE',
+          mode:         row.mode || 'PAPER',
+          loop:         row.loop_number || 1,
+          entryTime:    row.entry_time
+            ? new Date(row.entry_time).toLocaleTimeString('en-IN')
+            : '--:--',
+          _fromDB: true,  // flag: restored from DB (used by monitor to re-subscribe WS)
+        })
+      })
+      set({ basketsLoading: false })
+    } catch (err) {
+      console.warn('[STORE] fetchActiveBaskets error:', err)
+      set({ basketsLoading: false, basketsLoadError: err.message })
+    }
+  },
 
   tradeHistory: [],
   addHistory:   (h) => set(s => ({ tradeHistory: [h, ...s.tradeHistory].slice(0,100) })),
