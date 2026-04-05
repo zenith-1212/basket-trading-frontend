@@ -109,10 +109,15 @@ export default function BasketBuilder() {
           }),
         })
 
-        const savedBasket = dbRes.ok ? await dbRes.json() : null
-        if (!dbRes.ok) {
-          console.warn('[EXEC] DB persist failed:', await dbRes.text?.() || dbRes.status)
-          toast('\u26a0\ufe0f Trade placed but not saved to DB \u2014 refresh may lose this trade', { duration: 5000 })
+        let savedBasket = null
+        if (dbRes.ok) {
+          savedBasket = await dbRes.json()
+        } else {
+          // Get the actual error from the backend for debugging
+          let errDetail = `HTTP ${dbRes.status}`
+          try { const errBody = await dbRes.json(); errDetail = errBody.detail || JSON.stringify(errBody) } catch {}
+          console.warn('[EXEC] DB persist failed:', errDetail)
+          toast(`\u26a0\ufe0f Trade placed but not saved to DB: ${errDetail}`, { duration: 8000 })
         }
 
         // Step 3: Add to store using DB UUID (falls back to clientBasketId if DB failed)
