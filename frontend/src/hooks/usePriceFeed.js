@@ -113,6 +113,28 @@ export function usePriceFeed() {
     } catch {}
   }
 
+  // ── Re-subscribe restored baskets from DB (dispatched by useBasketMonitor) ──
+  useEffect(() => {
+    function handleResubscribe(event) {
+      const { instruments } = event.detail || {}
+      if (!instruments || instruments.length === 0) return
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        // WS not ready yet — retry after short delay
+        setTimeout(() => window.dispatchEvent(new CustomEvent('basket-monitor:resubscribe', { detail: event.detail })), 2000)
+        return
+      }
+      try {
+        ws.send(JSON.stringify({ type: 'set_basket', instruments }))
+        console.log(`[WS] Restored ${instruments.length} basket token(s) from DB after reload`)
+      } catch (e) {
+        console.warn('[WS] resubscribe failed:', e)
+      }
+    }
+    window.addEventListener('basket-monitor:resubscribe', handleResubscribe)
+    return () => window.removeEventListener('basket-monitor:resubscribe', handleResubscribe)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Tell backend when user changes index AFTER initial connect
   useEffect(() => {
     if (!connectedRef.current || !wsRef.current) return
