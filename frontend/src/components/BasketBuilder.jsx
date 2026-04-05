@@ -21,24 +21,28 @@ export default function BasketBuilder() {
   const mobile     = isMobile()
 
   async function execute() {
-    if (isEmpty)         { toast.error('Add orders to basket first'); return }
-    if (lockedProfit <= 0) { toast.error('Set target profit > 0'); return }
-    if (lockedLoss   <= 0) { toast.error('Set stop loss > 0'); return }
+    if (isEmpty)           { toast.error('Add orders to basket first'); return }
+    if (lockedProfit <= 0) { toast.error('Set target profit > 0');      return }
+    if (lockedLoss   <= 0) { toast.error('Set stop loss > 0');           return }
+
+    // Idempotency key — generated once at click time, before any async work.
+    // If the user refreshes mid-execution, the same key prevents a duplicate DB row.
+    const clientBasketId = `${token || 'anon'}_${Date.now()}`
 
     if (isLive) {
       const ok = window.confirm(
-        `⚠️ LIVE MODE — ${basket.length} REAL order(s) will be placed on Kotak Neo!\n\n` +
-        basket.map(o => `${o.side} ${o.symbol} ${o.strike} ${o.option_type} × ${o.quantity}`).join('\n') +
+        `\u26a0\ufe0f LIVE MODE \u2014 ${basket.length} REAL order(s) will be placed on Kotak Neo!\n\n` +
+        basket.map(o => `${o.side} ${o.symbol} ${o.strike} ${o.option_type} \xd7 ${o.quantity}`).join('\n') +
         `\n\nConfirm?`
       )
       if (!ok) return
 
-      // ── Place orders via backend ──────────────────────────────────────────
       setPlacing(true)
       toast.loading('Placing orders on Kotak Neo...', { id: 'exec' })
 
       try {
-        const res  = await fetch(`${API()}/api/orders/place_basket`, {
+        // Step 1: Place orders with Kotak
+        const kotakRes = await fetch(`${API()}/api/orders/place_basket`, {
           method:  'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -46,8 +50,6 @@ export default function BasketBuilder() {
           },
           body: JSON.stringify({
             orders: basket.map(o => {
-              // Always use the freshest live price from basketPrices (real-time WS tick).
-              // Falls back to the click-time entry_price if WS hasn't delivered a tick yet.
               const liveLtp = basketPrices[o.trd_symbol] || o.entry_price || 0
               return {
                 symbol:      o.symbol,
@@ -66,45 +68,69 @@ export default function BasketBuilder() {
           }),
         })
 
-        const data = await res.json()
+        const kotakData = await kotakRes.json()
+        if (!kotakRes.ok) throw new Error(kotakData.detail || 'Order placement failed')
 
-        if (!res.ok) {
-          throw new Error(data.detail || 'Order placement failed')
-        }
-
-        if (data.failed > 0) {
+        if (kotakData.failed > 0) {
           toast.error(
-            `${data.placed} placed, ${data.failed} failed:\n` +
-            data.errors.map(e => e.error).join('\n'),
+            `${kotakData.placed} placed, ${kotakData.failed} failed:\n` +
+            kotakData.errors.map(e => e.error).join('\n'),
             { id: 'exec', duration: 6000 }
           )
         } else {
-          toast.success(
-            `✅ ${data.placed} order(s) placed on Kotak Neo!`,
-            { id: 'exec' }
-          )
+          toast.success(`\u2705 ${kotakData.placed} order(s) placed on Kotak Neo!`, { id: 'exec' })
         }
 
-        // Add to active baskets with real order IDs
-        // entry_price is set to the live LTP at execution time for accurate P&L baseline
+        // Step 2: Persist basket to DB (idempotent via client_basket_id)
+        toast.loading('Saving trade to DB...', { id: 'exec' })
+        const dbRes = await fetch(`${API()}/api/baskets/create`, {
+          method:  'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            locked_profit:    lockedProfit,
+            locked_loss:      lockedLoss,
+            auto_loop:        autoLoop,
+            mode:             'LIVE',
+            client_basket_id: clientBasketId,
+            orders: basket.map((o, i) => ({
+              symbol:      o.symbol,
+              strike:      o.strike,
+              option_type: o.option_type,
+              expiry:      o.expiry,
+              side:        o.side,
+              quantity:    o.quantity,
+              entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+              trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
+              order_id:    kotakData.results?.[i]?.order_id || '',
+            })),
+          }),
+        })
+
+        const savedBasket = dbRes.ok ? await dbRes.json() : null
+        if (!dbRes.ok) {
+          console.warn('[EXEC] DB persist failed:', await dbRes.text?.() || dbRes.status)
+          toast('\u26a0\ufe0f Trade placed but not saved to DB \u2014 refresh may lose this trade', { duration: 5000 })
+        }
+
+        // Step 3: Add to store using DB UUID (falls back to clientBasketId if DB failed)
         addActiveBasket({
-          id:           Date.now().toString(),
-          symbol:       selectedSymbol,
-          orders:       basket.map((o, i) => ({
+          id:      savedBasket?.id || clientBasketId,
+          symbol:  selectedSymbol,
+          orders:  savedBasket?.orders || basket.map((o, i) => ({
             ...o,
             entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
-            order_id:    data.results[i]?.order_id || '',
+            trd_symbol:  o.trd_symbol || '',
+            order_id:    kotakData.results?.[i]?.order_id || '',
           })),
           lockedProfit, lockedLoss, autoLoop,
-          pnl:          0,
-          status:       'ACTIVE',
-          loop:         1,
-          entryTime:    new Date().toLocaleTimeString('en-IN'),
-          mode:         'LIVE',
+          pnl: 0, status: 'ACTIVE', loop: 1,
+          entryTime: new Date().toLocaleTimeString('en-IN'),
+          mode: 'LIVE',
         })
         clearBasket()
-
-        // Refresh live balance after placing
         fetchLiveBalance()
 
       } catch (err) {
@@ -114,21 +140,73 @@ export default function BasketBuilder() {
       }
 
     } else {
-      // ── Paper mode — no API call needed ──────────────────────────────────
-      addActiveBasket({
-        id:          Date.now().toString(),
-        symbol:      selectedSymbol,
-        orders:      basket.map(o => ({
-          ...o,
-          entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
-        })),
-        lockedProfit, lockedLoss, autoLoop,
-        pnl:         0, status: 'ACTIVE', loop: 1,
-        entryTime:   new Date().toLocaleTimeString('en-IN'),
-        mode:        'PAPER',
-      })
-      clearBasket()
-      toast.success('Basket executed in PAPER mode')
+      // Paper mode: persist to DB then add to store
+      setPlacing(true)
+      toast.loading('Saving paper trade...', { id: 'exec' })
+      try {
+        const dbRes = await fetch(`${API()}/api/baskets/create`, {
+          method:  'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            locked_profit:    lockedProfit,
+            locked_loss:      lockedLoss,
+            auto_loop:        autoLoop,
+            mode:             'PAPER',
+            client_basket_id: clientBasketId,
+            orders: basket.map(o => ({
+              symbol:      o.symbol,
+              strike:      o.strike,
+              option_type: o.option_type,
+              expiry:      o.expiry,
+              side:        o.side,
+              quantity:    o.quantity,
+              entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+              trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
+              order_id:    '',
+            })),
+          }),
+        })
+
+        const savedBasket = dbRes.ok ? await dbRes.json() : null
+
+        addActiveBasket({
+          id:      savedBasket?.id || clientBasketId,
+          symbol:  selectedSymbol,
+          orders:  savedBasket?.orders || basket.map(o => ({
+            ...o,
+            entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+            trd_symbol:  o.trd_symbol || '',
+          })),
+          lockedProfit, lockedLoss, autoLoop,
+          pnl: 0, status: 'ACTIVE', loop: 1,
+          entryTime: new Date().toLocaleTimeString('en-IN'),
+          mode: 'PAPER',
+        })
+        clearBasket()
+        toast.success('\u2705 Basket executed in PAPER mode', { id: 'exec' })
+      } catch (err) {
+        // Fallback: still add to memory so trade isn't lost
+        addActiveBasket({
+          id:      clientBasketId,
+          symbol:  selectedSymbol,
+          orders:  basket.map(o => ({
+            ...o,
+            entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+            trd_symbol:  o.trd_symbol || '',
+          })),
+          lockedProfit, lockedLoss, autoLoop,
+          pnl: 0, status: 'ACTIVE', loop: 1,
+          entryTime: new Date().toLocaleTimeString('en-IN'),
+          mode: 'PAPER',
+        })
+        clearBasket()
+        toast('Paper trade added (DB save failed)', { id: 'exec' })
+      } finally {
+        setPlacing(false)
+      }
     }
   }
 
