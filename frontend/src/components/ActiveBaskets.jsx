@@ -347,7 +347,20 @@ function BasketCard({ basket, index }) {
       }
     }
 
-    // Close in UI (paper mode always lands here; live mode after API success)
+    // Persist exit to DB then close in UI
+    try {
+      await fetch(`${API()}/api/baskets/${basket.id}/exit`, {
+        method:  'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ exit_pnl: pnl, exit_type: 'MANUAL' }),
+      })
+    } catch (e) {
+      console.warn('[EXIT] Backend exit record failed (closing UI anyway):', e)
+    }
+
     closeBasket(basket.id)
     if (!isLive) adjustBalance(pnl)
     addHistory({
@@ -355,7 +368,7 @@ function BasketCard({ basket, index }) {
       type: 'MANUAL', pnl, loop: basket.loop,
     })
     toast(`Basket #${index + 1} exited · ${pnl >= 0 ? '+' : ''}₹${pnl.toFixed(0)}`,
-          { icon: pnl >= 0 ? '✅' : '🔴' })
+          { icon: pnl >= 0 ? '\u2705' : '\ud83d\udd34' })
   }
 
   return (
