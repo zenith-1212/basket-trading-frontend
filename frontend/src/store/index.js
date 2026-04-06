@@ -1,15 +1,15 @@
 /**
- * store/index.js — v5.3  (CORRECT EXPIRY WEEKDAY FIX)
- * ===================================================
- * Key fix: getExpiries() now generates only the correct weekday per symbol:
- *   NIFTY       → every Thursday
- *   BANKNIFTY   → every Wednesday
- *   SENSEX      → every Friday
- *   FINNIFTY    → every Tuesday
- *   MIDCPNIFTY  → every Monday
+ * store/index.js — v5.4  (CORRECT EXPIRY WEEKDAY FIX — weekly + monthly)
+ * ========================================================================
+ * Key fix: getExpiries() now generates correct weekday per symbol:
+ *   NIFTY       → every Thursday  (weekly AND monthly)
+ *   BANKNIFTY   → every Wednesday (weekly), last Tuesday (monthly)
+ *   SENSEX      → every Friday    (weekly AND monthly)
+ *   FINNIFTY    → every Tuesday   (weekly AND monthly)
+ *   MIDCPNIFTY  → every Monday    (weekly AND monthly)
  *
- * Holiday adjustment: if computed day is a market holiday, shifts to previous trading day.
- * No backend dependency for expiry list — fully calculated in frontend.
+ * Holiday adjustment: if computed day is a market holiday,
+ * shifts to previous trading day.
  */
 import { create } from 'zustand'
 
@@ -39,7 +39,7 @@ function toYmd(exp) {
   return exp
 }
 
-// ── Expiry calculation — correct weekday per symbol ───────────────────────────
+// ── Expiry calculation ────────────────────────────────────────────────────────
 
 // Known NSE/BSE market holidays (YYYY-MM-DD). Update annually.
 const MARKET_HOLIDAYS = new Set([
@@ -54,6 +54,7 @@ const MARKET_HOLIDAYS = new Set([
 ])
 
 // JS getDay(): 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
+// Weekly expiry weekday per symbol
 const EXPIRY_WEEKDAY = {
   NIFTY:      4,  // Thursday
   BANKNIFTY:  3,  // Wednesday
@@ -61,6 +62,17 @@ const EXPIRY_WEEKDAY = {
   FINNIFTY:   2,  // Tuesday
   MIDCPNIFTY: 1,  // Monday
   BANKEX:     5,  // Friday
+}
+
+// Monthly expiry weekday (last occurrence in month).
+// BANKNIFTY monthly = last Tuesday (NSE shifted from Thursday in 2024).
+const MONTHLY_EXPIRY_WEEKDAY = {
+  NIFTY:      4,  // Thursday  (same as weekly)
+  BANKNIFTY:  2,  // Tuesday   (different from weekly Wednesday!)
+  SENSEX:     5,  // Friday    (same as weekly)
+  FINNIFTY:   2,  // Tuesday   (same as weekly)
+  MIDCPNIFTY: 1,  // Monday    (same as weekly)
+  BANKEX:     5,  // Friday    (same as weekly)
 }
 
 function _toYYYYMMDD(d) {
@@ -87,26 +99,41 @@ function _adjustHoliday(d) {
 }
 
 export function getExpiries(symbol = 'NIFTY', count = 20) {
-  const MONTHS   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-  const sym      = symbol.toUpperCase()
-  const targetDay = EXPIRY_WEEKDAY[sym] ?? EXPIRY_WEEKDAY['NIFTY']
-  const expiries  = []
-  const seen      = new Set()
+  const MONTHS     = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const sym        = symbol.toUpperCase()
+  const weeklyDay  = EXPIRY_WEEKDAY[sym]         ?? 4
+  const monthlyDay = MONTHLY_EXPIRY_WEEKDAY[sym] ?? weeklyDay
+  const expiries   = []
+  const seen       = new Set()
 
   // Start from today
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
-  // Find first occurrence of targetDay on or after today
+  // Find first occurrence of weeklyDay on or after today
   const start = new Date(today)
-  while (start.getDay() !== targetDay) {
-    start.setDate(start.getDate() + 1)
-  }
+  while (start.getDay() !== weeklyDay) start.setDate(start.getDate() + 1)
 
-  // Walk forward week by week
   const cursor = new Date(start)
   while (expiries.length < count) {
-    const adjusted = _adjustHoliday(new Date(cursor))
+    // Is this the last weekly expiry of the month?
+    const nextWeek      = new Date(cursor)
+    nextWeek.setDate(nextWeek.getDate() + 7)
+    const isLastOfMonth = nextWeek.getMonth() !== cursor.getMonth()
+
+    let candidate = new Date(cursor)
+
+    if (isLastOfMonth && monthlyDay !== weeklyDay) {
+      // Use last occurrence of monthlyDay in this month
+      // e.g. BANKNIFTY: last Tuesday instead of last Wednesday
+      const lastDayOfMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0)
+      candidate = new Date(lastDayOfMonth)
+      while (candidate.getDay() !== monthlyDay) {
+        candidate.setDate(candidate.getDate() - 1)
+      }
+    }
+
+    const adjusted = _adjustHoliday(new Date(candidate))
     const str = `${String(adjusted.getDate()).padStart(2,'0')}-${MONTHS[adjusted.getMonth()]}-${adjusted.getFullYear()}`
     if (!seen.has(str)) {
       expiries.push(str)
@@ -118,7 +145,7 @@ export function getExpiries(symbol = 'NIFTY', count = 20) {
   return expiries
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Black-Scholes approximation for placeholder prices ────────────────────────
 
 function bs_approx(spot, strike, daysToExpiry, isCall) {
   const t          = Math.max(daysToExpiry, 1) / 365
@@ -277,6 +304,24 @@ export const useStore = create((set, get) => ({
 
   setExpiriesFromBackend: (symbol, expiriesFromBackend) => {
     if (!symbol || !expiriesFromBackend || expiriesFromBackend.length === 0) return
+
+    // Filter backend expiries — only keep dates matching the correct weekday for this symbol.
+    // Prevents backend returning wrong-weekday monthly expiries
+    // (e.g. Thursdays for BANKNIFTY which should be Tuesdays).
+    const sym        = symbol.toUpperCase()
+    const weeklyDay  = EXPIRY_WEEKDAY[sym]         ?? 4
+    const monthlyDay = MONTHLY_EXPIRY_WEEKDAY[sym] ?? weeklyDay
+    const validDays  = new Set([weeklyDay, monthlyDay])
+    const MON_TO_NUM = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11}
+
+    const filtered = expiriesFromBackend.filter(e => {
+      const p = e.split('-')
+      if (p.length !== 3 || p[0].length !== 2) return true  // keep if can't parse
+      const d = new Date(parseInt(p[2]), MON_TO_NUM[p[1]] || 0, parseInt(p[0]))
+      return validDays.has(d.getDay())
+    })
+    const expiriesToUse = filtered.length > 0 ? filtered : expiriesFromBackend
+
     set(s => {
       if (s.selectedSymbol !== symbol) return s
       const chain = { ...s.chain, options: { ...s.chain.options } }
@@ -290,15 +335,15 @@ export const useStore = create((set, get) => ({
         return 0
       }
 
-      const backendSet = new Set(expiriesFromBackend)
+      const backendSet = new Set(expiriesToUse)
       const withData   = chain.expiries.filter(e =>
         (chain.options[e] || []).some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
       )
-      const merged = [...new Set([...expiriesFromBackend, ...withData])]
+      const merged = [...new Set([...expiriesToUse, ...withData])]
       merged.sort((a, b) => toMs(a) - toMs(b))
-      chain.expiries = merged.length > 0 ? merged : expiriesFromBackend
+      chain.expiries = merged.length > 0 ? merged : expiriesToUse
 
-      for (const exp of expiriesFromBackend) {
+      for (const exp of expiriesToUse) {
         if (!chain.options[exp]) chain.options[exp] = []
       }
 
