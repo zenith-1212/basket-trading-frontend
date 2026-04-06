@@ -1,19 +1,15 @@
 /**
- * store/index.js — v5.2  (NON-THURSDAY EXPIRY FIX)
+ * store/index.js — v5.3  (CORRECT EXPIRY WEEKDAY FIX)
  * ===================================================
- * Key fix: getExpiries() was hardcoded to Thursday (weekday 4 in JS).
- * NIFTY sometimes expires on non-Thursday days (special weekly expiries,
- * budget week, election week, etc.) e.g. 24-Mar-2026 = Tuesday.
+ * Key fix: getExpiries() now generates only the correct weekday per symbol:
+ *   NIFTY       → every Thursday
+ *   BANKNIFTY   → every Wednesday
+ *   SENSEX      → every Friday
+ *   FINNIFTY    → every Tuesday
+ *   MIDCPNIFTY  → every Monday
  *
- * Fix: getExpiries() now generates the next 6 calendar days as candidates
- * and relies on the backend chain_snapshot to correct the expiry.
- * The real expiry list is populated from chain_snapshot.expiry when it arrives.
- *
- * All other v5.0 fixes retained:
- *  - _pendingSnapshot buffer for cold-start price_snapshot
- *  - tokenMap O(1) tick routing
- *  - applyChainSnapshot adds missing strikes from engine data
- *  - fetchChainLtps in-flight guard
+ * Holiday adjustment: if computed day is a market holiday, shifts to previous trading day.
+ * No backend dependency for expiry list — fully calculated in frontend.
  */
 import { create } from 'zustand'
 
@@ -43,43 +39,86 @@ function toYmd(exp) {
   return exp
 }
 
-/**
- * FIX v5.3: Generate upcoming expiries without assuming a fixed weekday.
- *
- * OLD (broken): generated only Thursdays — missed special expiries like
- *   30-Mar-2026 (Monday, month-end) and 07-Apr-2026 (Tuesday, SENSEX-style).
- *
- * NEW: returns the next `count` calendar days starting from today as a
- * PLACEHOLDER list. The real expiry list is always corrected by the backend
- * via chain_snapshot (applyChainSnapshot) or via fetchRealExpiries().
- *
- * We also keep up to 4 Thursdays as a safety net so that normal weeks
- * still work even before the backend responds.
- */
-export function getExpiries(symbol = 'NIFTY', count = 6) {
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-  const expiries = []
-  const seen     = new Set()
+// ── Expiry calculation — correct weekday per symbol ───────────────────────────
 
-  // Start from today — today itself may be the expiry (same-day expiry until 3:30 PM IST)
-  let d = new Date()
-  d.setHours(0, 0, 0, 0)
+// Known NSE/BSE market holidays (YYYY-MM-DD). Update annually.
+const MARKET_HOLIDAYS = new Set([
+  // 2025
+  '2025-02-26','2025-03-14','2025-03-31','2025-04-14','2025-04-18',
+  '2025-05-01','2025-08-15','2025-08-27','2025-10-02','2025-10-20',
+  '2025-10-21','2025-11-05','2025-12-25',
+  // 2026
+  '2026-01-26','2026-02-16','2026-03-20','2026-03-30','2026-04-03',
+  '2026-04-14','2026-05-01','2026-08-15','2026-10-02','2026-10-26',
+  '2026-11-05','2026-12-25',
+])
 
-  // Scan next 60 calendar days, collect Mon–Fri only (exchanges never expire on weekends)
-  // This ensures we catch ANY weekday expiry: Mon month-end, Tue special week, Thu normal, etc.
-  for (let i = 0; i < 60 && expiries.length < count; i++) {
-    const day = d.getDay()          // 0=Sun, 6=Sat
-    if (day >= 1 && day <= 5) {     // Mon–Fri only
-      const str = `${String(d.getDate()).padStart(2,'0')}-${months[d.getMonth()]}-${d.getFullYear()}`
-      if (!seen.has(str)) {
-        expiries.push(str)
-        seen.add(str)
-      }
-    }
-    d.setDate(d.getDate() + 1)
+// JS getDay(): 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
+const EXPIRY_WEEKDAY = {
+  NIFTY:      4,  // Thursday
+  BANKNIFTY:  3,  // Wednesday
+  SENSEX:     5,  // Friday
+  FINNIFTY:   2,  // Tuesday
+  MIDCPNIFTY: 1,  // Monday
+  BANKEX:     5,  // Friday
+}
+
+function _toYYYYMMDD(d) {
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${mm}-${dd}`
+}
+
+function _isTradingDay(d) {
+  const day = d.getDay()
+  if (day === 0 || day === 6) return false
+  return !MARKET_HOLIDAYS.has(_toYYYYMMDD(d))
+}
+
+function _prevTradingDay(d) {
+  const copy = new Date(d)
+  copy.setDate(copy.getDate() - 1)
+  while (!_isTradingDay(copy)) copy.setDate(copy.getDate() - 1)
+  return copy
+}
+
+function _adjustHoliday(d) {
+  return _isTradingDay(d) ? d : _prevTradingDay(d)
+}
+
+export function getExpiries(symbol = 'NIFTY', count = 20) {
+  const MONTHS   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const sym      = symbol.toUpperCase()
+  const targetDay = EXPIRY_WEEKDAY[sym] ?? EXPIRY_WEEKDAY['NIFTY']
+  const expiries  = []
+  const seen      = new Set()
+
+  // Start from today
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  // Find first occurrence of targetDay on or after today
+  const start = new Date(today)
+  while (start.getDay() !== targetDay) {
+    start.setDate(start.getDate() + 1)
   }
+
+  // Walk forward week by week
+  const cursor = new Date(start)
+  while (expiries.length < count) {
+    const adjusted = _adjustHoliday(new Date(cursor))
+    const str = `${String(adjusted.getDate()).padStart(2,'0')}-${MONTHS[adjusted.getMonth()]}-${adjusted.getFullYear()}`
+    if (!seen.has(str)) {
+      expiries.push(str)
+      seen.add(str)
+    }
+    cursor.setDate(cursor.getDate() + 7)
+  }
+
   return expiries
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function bs_approx(spot, strike, daysToExpiry, isCall) {
   const t          = Math.max(daysToExpiry, 1) / 365
@@ -97,7 +136,7 @@ export function generateChain(symbol, spot, depth = 40) {
   const strikes = []
   for (let i = -depth; i <= depth; i++) strikes.push(center + i * gap)
 
-  const expiries = getExpiries(symbol, 6)
+  const expiries = getExpiries(symbol, 20)
   const options  = {}
   const today    = new Date()
 
@@ -205,21 +244,14 @@ export const useStore = create((set, get) => ({
       priceChanges: { ...s.priceChanges, [sym]: prev > 0 ? parseFloat((price - prev).toFixed(2)) : 0 },
       spotPrices:   { ...s.spotPrices,   [sym]: price },
     })
-    // Only regenerate chain if:
-    // 1. This is the selected symbol
-    // 2. Chain has NO real data yet (all ltps are 0 — BS placeholder only)
     if (sym === get().selectedSymbol) {
-      const gap     = STRIKE_GAP[sym] || 50
       const curRows = get().chain.options[get().selectedExpiry] || []
-      const hasReal = curRows.some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
-      // Only regen if chain is completely empty (no rows at all)
       if (curRows.length === 0) {
         const newChain = generateChain(sym, price)
         const expiry   = get().selectedExpiry || newChain.expiries[0] || ''
         const tokenMap = buildTokenMap(newChain.options)
         set({ chain: newChain, selectedExpiry: expiry, tokenMap })
       }
-      // Never overwrite real prices — real chain comes via applyChainSnapshot
     }
   },
 
@@ -243,11 +275,6 @@ export const useStore = create((set, get) => ({
     set({ selectedExpiry: exp })
   },
 
-  /**
-   * FIX v5.3: Called after fetching real expiries from backend.
-   * Merges backend expiry list into chain.expiries and selects the nearest
-   * real expiry — replacing the weekday-guessed placeholder list.
-   */
   setExpiriesFromBackend: (symbol, expiriesFromBackend) => {
     if (!symbol || !expiriesFromBackend || expiriesFromBackend.length === 0) return
     set(s => {
@@ -263,7 +290,6 @@ export const useStore = create((set, get) => ({
         return 0
       }
 
-      // Merge real backend expiries with any existing expiries that have live data
       const backendSet = new Set(expiriesFromBackend)
       const withData   = chain.expiries.filter(e =>
         (chain.options[e] || []).some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
@@ -272,12 +298,10 @@ export const useStore = create((set, get) => ({
       merged.sort((a, b) => toMs(a) - toMs(b))
       chain.expiries = merged.length > 0 ? merged : expiriesFromBackend
 
-      // Pre-create empty slot for real expiries not yet loaded
       for (const exp of expiriesFromBackend) {
         if (!chain.options[exp]) chain.options[exp] = []
       }
 
-      // Switch to first real expiry only if current selection is a stale placeholder
       const currentIsReal = backendSet.has(s.selectedExpiry) ||
         (chain.options[s.selectedExpiry] || []).some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
       const newExpiry = currentIsReal ? s.selectedExpiry : (chain.expiries[0] || s.selectedExpiry)
@@ -296,7 +320,6 @@ export const useStore = create((set, get) => ({
     set({ chain, selectedExpiry: chain.expiries[0] || '', tokenMap })
   },
 
-  // Apply chain_snapshot — this is the source of truth for real expiries
   applyChainSnapshot: (symbol, expiry, chainData, expiry_ymd) => {
     if (!symbol || !expiry || !chainData) return
 
@@ -317,18 +340,14 @@ export const useStore = create((set, get) => ({
     }
 
     set(s => {
-      // FIX: The backend sends the REAL expiry (e.g. "24-Mar-2026").
-      // If our chain doesn't have it yet, add it.
       let targetExpiry = expiry
       const chain = { ...s.chain, options: { ...s.chain.options } }
 
-      // Add the real expiry to our expiry list if missing
       if (!chain.options[targetExpiry]) {
         const spot = s.spotPrices[symbol] || 23000
         const gap  = STRIKE_GAP[symbol] || 50
         const allStrikes = Object.keys(ltpMap).map(Number).sort((a,b) => a-b)
 
-        // Build rows from engine data
         chain.options[targetExpiry] = allStrikes.map(strike => ({
           strike,
           ce_ltp: 0, pe_ltp: 0, ce_prev: 0, pe_prev: 0,
@@ -337,10 +356,8 @@ export const useStore = create((set, get) => ({
           loading: false,
         }))
 
-      // Add to expiry list, keeping it sorted by real date
         if (!chain.expiries.includes(targetExpiry)) {
           const allExp = [...chain.expiries.filter(e => e !== targetExpiry), targetExpiry]
-          // Sort by actual date value
           allExp.sort((a, b) => {
             const toMs = (e) => {
               const p = e.split('-')
@@ -356,14 +373,11 @@ export const useStore = create((set, get) => ({
         }
       }
 
-      // Build/extend rows from engine data — add any new strikes not yet in chain
-      const existingStrikes = new Set((chain.options[targetExpiry] || []).map(r => r.strike))
       const allStrikes = [...new Set([
         ...(chain.options[targetExpiry] || []).map(r => r.strike),
         ...Object.keys(ltpMap).map(Number),
       ])].sort((a, b) => a - b)
 
-      // Rebuild rows including new strikes from engine
       const spot2 = s.spotPrices[symbol] || 23000
       const gap2  = STRIKE_GAP[symbol] || 50
       chain.options[targetExpiry] = allStrikes.map(strike => {
@@ -385,20 +399,9 @@ export const useStore = create((set, get) => ({
       const tokenMap = buildTokenMap(chain.options)
       console.log(`[SNAPSHOT] ${Object.keys(ltpMap).length} strikes applied (${symbol} ${targetExpiry})`)
 
-      // FIX v5.4: Decide whether to update selectedExpiry.
-      // Switch to targetExpiry when ANY of:
-      //   (a) selectedExpiry is blank (cold start)
-      //   (b) selectedExpiry has zero real price data (placeholder not yet loaded)
-      //   (c) selectedExpiry is today or in the past (expired) — this was the SENSEX bug:
-      //       getExpiries() generated today's date as placeholder, BS prices made curHasData=true,
-      //       so we never switched to the real next expiry (e.g. 30-Mar→02-Apr for SENSEX)
       const curRows    = chain.options[s.selectedExpiry] || []
       const curHasData = curRows.some(r => r.ce_ltp > 0 || r.pe_ltp > 0)
 
-      // isStrictlyExpired: today or past BUT only counts as "expired placeholder"
-      // when there's no real price data for it. This way:
-      //   - SENSEX: today placeholder (no real data) → treated as expired → advance ✓
-      //   - NIFTY expiry day: today with real data → NOT treated as expired → keep ✓
       const isExpiredPlaceholder = (() => {
         if (!s.selectedExpiry) return true
         try {
@@ -408,15 +411,12 @@ export const useStore = create((set, get) => ({
             const expMs   = new Date(parseInt(p[2]), MON[p[1]] || 0, parseInt(p[0])).getTime()
             const todayMs = new Date(new Date().setHours(0,0,0,0)).getTime()
             const isPastOrToday = expMs <= todayMs
-            // Only treat as expired if it's in the past OR (today AND no real data)
             return expMs < todayMs || (isPastOrToday && !curHasData)
           }
         } catch {}
         return false
       })()
 
-      // Only advance expiry when targetExpiry is actually later than selectedExpiry
-      // (prevents a stale snapshot from an older expiry flipping us backwards)
       const targetIsLater = (() => {
         try {
           const toMs = (e) => {
@@ -432,10 +432,6 @@ export const useStore = create((set, get) => ({
         return false
       })()
 
-      // Switch expiry when:
-      //   (a) selectedExpiry is blank (cold start)
-      //   (b) current expiry has no real price data yet (placeholder)
-      //   (c) current expiry is an expired/today placeholder AND targetExpiry is later
       const shouldUpdateExpiry = !s.selectedExpiry || !curHasData || (isExpiredPlaceholder && targetIsLater)
       const resolvedExpiry     = shouldUpdateExpiry ? targetExpiry : s.selectedExpiry
 
@@ -450,7 +446,6 @@ export const useStore = create((set, get) => ({
         selectedExpiry: resolvedExpiry,
       }
 
-      // Apply pending snapshot prices
       const pending = s._pendingSnapshot
       if (pending && Object.keys(tokenMap).length > 0) {
         for (const [token, ltp] of Object.entries(pending)) {
@@ -486,7 +481,6 @@ export const useStore = create((set, get) => ({
 
     if (!prices || Object.keys(prices).length === 0) return
 
-    // FIX #2: always merge into basketPrices regardless of tokenMap state
     set(s => ({ basketPrices: { ...s.basketPrices, ...Object.fromEntries(
       Object.entries(prices).filter(([,v]) => v > 0)
     ) } }))
@@ -531,8 +525,6 @@ export const useStore = create((set, get) => ({
     const API = import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
     const ymd = toYmd(expiry)
 
-    // Try the requested expiry first, then scan every day for next 14 days
-    // (NIFTY/BANKNIFTY can expire on any weekday for special weeks)
     const candidates = [ymd]
     const probe = new Date()
     probe.setHours(0, 0, 0, 0)
@@ -570,9 +562,6 @@ export const useStore = create((set, get) => ({
     _chainFetchKey = ''
   },
 
-  // FIX #2: basketPrices holds token→ltp for ALL subscribed tokens.
-  // This map is NEVER cleared when the user switches instruments, so the
-  // basket monitor always has live prices regardless of what's being viewed.
   basketPrices: {},
 
   updateLtpByToken: (token, ltp) => {
@@ -582,13 +571,10 @@ export const useStore = create((set, get) => ({
       return
     }
 
-    // FIX #2: Always update basketPrices for every option tick.
-    // This runs even when the token is NOT in the current chain view,
-    // keeping basket P&L live across instrument switches.
     set(s => ({ basketPrices: { ...s.basketPrices, [token]: ltp } }))
 
     const loc = get().tokenMap[token]
-    if (!loc) return   // token not in current chain view — basketPrices already updated above
+    if (!loc) return
     const { expiry, idx, side } = loc
     set(s => {
       const rows = s.chain.options[expiry]
@@ -617,13 +603,11 @@ export const useStore = create((set, get) => ({
   setLockedLoss:   (v) => set({ lockedLoss: v }),
   setAutoLoop:     (v) => set({ autoLoop: v }),
 
-  // ── Active baskets (persisted in Supabase, restored on reload) ────────────
   activeBaskets:        [],
-  basketsLoading:       false,   // true while fetching from DB on mount
+  basketsLoading:       false,
   basketsLoadError:     null,
 
   addActiveBasket: (b) => set(s => {
-    // Guard: never add a basket whose DB id already exists in store
     if (b.id && s.activeBaskets.some(x => x.id === b.id)) return s
     return { activeBaskets: [...s.activeBaskets, b] }
   }),
@@ -644,11 +628,6 @@ export const useStore = create((set, get) => ({
     activeBaskets: s.activeBaskets.filter(b => b.id !== id),
   })),
 
-  /**
-   * fetchActiveBaskets — called on app mount (AppInner useEffect).
-   * Loads all ACTIVE baskets from Supabase so trades survive page refresh.
-   * Skips baskets already in store (reconnect-safe, no duplicates).
-   */
   fetchActiveBaskets: async () => {
     const { token, activeBaskets, addActiveBasket } = get()
     if (!token) return
@@ -662,7 +641,7 @@ export const useStore = create((set, get) => ({
       const rows = await res.json()
       const existingIds = new Set(activeBaskets.map(b => b.id))
       rows.forEach(row => {
-        if (existingIds.has(row.id)) return  // already in store
+        if (existingIds.has(row.id)) return
         addActiveBasket({
           id:           row.id,
           symbol:       row.orders?.[0]?.symbol || 'UNKNOWN',
@@ -687,7 +666,7 @@ export const useStore = create((set, get) => ({
           entryTime:    row.entry_time
             ? new Date(row.entry_time).toLocaleTimeString('en-IN')
             : '--:--',
-          _fromDB: true,  // flag: restored from DB (used by monitor to re-subscribe WS)
+          _fromDB: true,
         })
       })
       set({ basketsLoading: false })
