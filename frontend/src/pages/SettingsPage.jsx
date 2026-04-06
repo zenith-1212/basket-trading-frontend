@@ -2,6 +2,8 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { useStore } from '../store'
 
+const API = () => import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
+
 function Section({ title, children }) {
   return (
     <div className="card" style={{ padding:16 }}>
@@ -25,12 +27,27 @@ function Field({ label, note, ...props }) {
 
 export default function SettingsPage() {
   const { token } = useStore()
+
   const [engine, setEngine] = useState(() => ({
     url: localStorage.getItem('engine_url') || 'https://basket-trading-backend.onrender.com'
   }))
   const [engineStatus, setEngineStatus] = useState(null)
-  const [dhan, setDhan] = useState({ client_id:'', pin:'', totp_secret:'', access_token:'' })
+
+  const [dhan, setDhan] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('dhan_config') || '{}') } catch { return {} }
+  })
+  const [dhanFields, setDhanFields] = useState({
+    client_id:   dhan.client_id   || '',
+    pin:         dhan.pin         || '',
+    totp_secret: dhan.totp_secret || '',
+    access_token: dhan.access_token || '',
+  })
+
   const [kotak, setKotak] = useState({ consumer_key:'', mobile:'', password:'', mpin:'', ucc:'', totp_secret:'' })
+
+  const [refreshing, setRefreshing]   = useState(false)
+  const [refreshStatus, setRefreshStatus] = useState(null)  // null | 'ok' | 'error'
+  const [refreshMsg, setRefreshMsg]   = useState('')
 
   async function testEngine() {
     setEngineStatus('Testing...')
@@ -38,7 +55,7 @@ export default function SettingsPage() {
       const res = await fetch(engine.url.replace(/\/$/, '') + '/health')
       if (res.ok) {
         const d = await res.json()
-        setEngineStatus(`✓ Connected — ${d.subscribed_tokens || 0} tokens subscribed`)
+        setEngineStatus(`✓ Connected — ${d.subscribed_tokens || d.prices_cached || 0} tokens`)
       } else {
         setEngineStatus(`✗ HTTP ${res.status}`)
       }
@@ -49,25 +66,79 @@ export default function SettingsPage() {
 
   function saveEngine() {
     localStorage.setItem('engine_url', engine.url)
-    // Also update backend via API
-    fetch((import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com') + '/api/engine/url', {
+    fetch(API() + '/api/engine/url', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ url: engine.url })
     }).catch(() => {})
     toast.success('Cloud Engine URL saved')
   }
 
   function saveDhan() {
-    localStorage.setItem('dhan_config', JSON.stringify(dhan))
+    localStorage.setItem('dhan_config', JSON.stringify(dhanFields))
     toast.success('Dhan credentials saved locally')
   }
+
   function saveKotak() {
     localStorage.setItem('kotak_config', JSON.stringify(kotak))
     toast.success('Kotak credentials saved locally')
+  }
+
+  // ── Refresh Dhan Token ──────────────────────────────────────────────────────
+  async function refreshDhanToken() {
+    const { client_id, pin, totp_secret } = dhanFields
+
+    if (!client_id || !pin || !totp_secret) {
+      toast.error('Fill in CLIENT ID, PIN and TOTP SECRET first, then click Refresh Token.')
+      return
+    }
+
+    setRefreshing(true)
+    setRefreshStatus(null)
+    setRefreshMsg('')
+    toast.loading('Fetching new Dhan token...', { id: 'dhan-refresh' })
+
+    try {
+      const res = await fetch(API() + '/api/orders/refresh_dhan_token', {
+        method:  'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          client_id,
+          pin,
+          totp_secret,
+        }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data.detail || `HTTP ${res.status}`)
+      }
+
+      // Update displayed access token field with the new token preview
+      setDhanFields(f => ({ ...f, access_token: data.token_preview + ' (saved to backend .env)' }))
+      localStorage.setItem('dhan_config', JSON.stringify({ ...dhanFields, access_token: data.token_preview }))
+
+      const restartNote = data.engine_restart?.status === 'restarted'
+        ? `Engine restarted (${data.engine_restart.service})`
+        : data.engine_restart?.status === 'reloaded'
+        ? 'Engine reloaded via HTTP'
+        : data.engine_restart?.note || 'Engine restart attempted'
+
+      setRefreshStatus('ok')
+      setRefreshMsg(`✅ Token refreshed · ${restartNote}`)
+      toast.success(`Dhan token refreshed! ${restartNote}`, { id: 'dhan-refresh', duration: 6000 })
+
+    } catch (err) {
+      setRefreshStatus('error')
+      setRefreshMsg(`❌ ${err.message}`)
+      toast.error(`Token refresh failed: ${err.message}`, { id: 'dhan-refresh', duration: 8000 })
+    } finally {
+      setRefreshing(false)
+    }
   }
 
   return (
@@ -76,14 +147,14 @@ export default function SettingsPage() {
       <div style={{ padding:'12px 16px', background:'var(--amber-dim)', border:'1px solid rgba(255,171,0,0.3)',
         borderRadius:8, fontSize:11, color:'var(--amber)', display:'flex', gap:8, alignItems:'flex-start' }}>
         <span style={{ fontSize:16 }}>⚠</span>
-        <span>Credentials are saved to <strong>your browser's local storage</strong> only. Never share them. For production, store them in your backend .env file and Supabase encrypted columns.</span>
+        <span>Credentials are saved to <strong>your browser's local storage</strong> only. Never share them. For production, store them in your backend .env file.</span>
       </div>
 
       {/* Cloud Engine */}
-      <Section title="☁ Cloud Engine (Railway)">
-        <Field label="RAILWAY URL" placeholder="https://your-app.railway.app"
+      <Section title="☁ Cloud Engine">
+        <Field label="BACKEND / ENGINE URL" placeholder="https://your-app.railway.app"
           value={engine.url} onChange={e => setEngine({url:e.target.value})} />
-        {engineStatus && <div style={{ fontSize:11, color: engineStatus.startsWith('✓') ? 'var(--green)' : 'var(--red)', marginBottom:8 }}>{engineStatus}</div>}
+        {engineStatus && <div style={{ fontSize:11, color: engineStatus.startsWith('✓') ? 'var(--green-txt)' : 'var(--red-txt)', marginBottom:8 }}>{engineStatus}</div>}
         <div style={{ display:'flex', gap:8 }}>
           <button className="btn btn-outline" onClick={testEngine} style={{ flex:1, justifyContent:'center' }}>🔌 Test Connection</button>
           <button className="btn btn-green" onClick={saveEngine} style={{ flex:1, justifyContent:'center' }}>Save URL</button>
@@ -91,21 +162,67 @@ export default function SettingsPage() {
       </Section>
 
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+
         {/* Dhan */}
         <Section title="Dhan API — Price Feed">
-          <Field label="CLIENT ID" placeholder="1105862545" value={dhan.client_id}
-            onChange={e => setDhan(d=>({...d, client_id:e.target.value}))} />
-          <Field label="PIN (4–6 digits)" type="password" placeholder="••••••" value={dhan.pin}
-            onChange={e => setDhan(d=>({...d, pin:e.target.value}))} />
-          <Field label="TOTP SECRET (32 chars)" type="password" placeholder="D6SRY..." value={dhan.totp_secret}
-            onChange={e => setDhan(d=>({...d, totp_secret:e.target.value}))}
+          <Field label="CLIENT ID" placeholder="1105862545" value={dhanFields.client_id}
+            onChange={e => setDhanFields(d=>({...d, client_id:e.target.value}))} />
+          <Field label="PIN (4–6 digits)" type="password" placeholder="••••••" value={dhanFields.pin}
+            onChange={e => setDhanFields(d=>({...d, pin:e.target.value}))} />
+          <Field label="TOTP SECRET (32 chars)" type="password" placeholder="D6SRY..." value={dhanFields.totp_secret}
+            onChange={e => setDhanFields(d=>({...d, totp_secret:e.target.value}))}
             note="From developer.dhanhq.co > Enable TOTP > copy base32 key" />
-          <Field label="ACCESS TOKEN (optional — auto-refreshed)" type="password"
-            placeholder="eyJ0eXAiOi..." value={dhan.access_token}
-            onChange={e => setDhan(d=>({...d, access_token:e.target.value}))} />
-          <button className="btn btn-green" onClick={saveDhan} style={{ width:'100%', justifyContent:'center' }}>
-            SAVE DHAN CONFIG
-          </button>
+          <Field label="CURRENT ACCESS TOKEN" type="password"
+            placeholder="eyJ0eXAiOi... (auto-filled on refresh)"
+            value={dhanFields.access_token}
+            onChange={e => setDhanFields(d=>({...d, access_token:e.target.value}))} />
+
+          {/* Status message */}
+          {refreshMsg && (
+            <div style={{
+              fontSize:11, marginBottom:10, padding:'7px 10px', borderRadius:6,
+              background: refreshStatus === 'ok' ? 'var(--green-dim)' : 'var(--red-dim)',
+              color:      refreshStatus === 'ok' ? 'var(--green-txt)' : 'var(--red-txt)',
+              border:     `1px solid ${refreshStatus === 'ok' ? 'rgba(0,135,90,0.25)' : 'rgba(192,57,43,0.25)'}`,
+            }}>
+              {refreshMsg}
+            </div>
+          )}
+
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-green" onClick={saveDhan}
+              style={{ flex:1, justifyContent:'center', fontSize:12 }}>
+              Save Config
+            </button>
+            {/* THE REFRESH BUTTON */}
+            <button
+              onClick={refreshDhanToken}
+              disabled={refreshing}
+              style={{
+                flex: 2,
+                padding: '9px 0',
+                border: 'none',
+                borderRadius: 6,
+                cursor: refreshing ? 'not-allowed' : 'pointer',
+                fontFamily: 'var(--sans)',
+                fontSize: 13,
+                fontWeight: 700,
+                background: refreshing ? 'var(--border)' : 'var(--blue)',
+                color: refreshing ? 'var(--text3)' : '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                transition: 'all 0.15s',
+              }}>
+              {refreshing
+                ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⏳</span> Refreshing...</>
+                : '🔄 Refresh Token + Restart Engine'}
+            </button>
+          </div>
+          <div style={{ fontSize:10, color:'var(--text3)', marginTop:6, lineHeight:1.6 }}>
+            Fetches a new Dhan access token using your credentials → saves it to backend .env → restarts the trading engine automatically.
+          </div>
         </Section>
 
         {/* Kotak */}
@@ -127,19 +244,20 @@ export default function SettingsPage() {
             SAVE KOTAK CONFIG
           </button>
         </Section>
+
       </div>
 
       {/* Info */}
       <Section title="How to get API credentials">
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, fontSize:11, color:'var(--text2)', lineHeight:1.7 }}>
           <div>
-            <div style={{ color:'var(--green)', fontWeight:700, marginBottom:6 }}>Dhan API (for price feed)</div>
+            <div style={{ color:'var(--green-txt)', fontWeight:700, marginBottom:6 }}>Dhan API (for price feed)</div>
             <ol style={{ paddingLeft:16 }}>
               <li>Go to <a href="https://developer.dhanhq.co" target="_blank" style={{color:'var(--blue)'}}>developer.dhanhq.co</a></li>
               <li>Login with your Dhan account</li>
-              <li>Create a new app → get CLIENT_ID</li>
+              <li>Create an app → copy CLIENT_ID</li>
               <li>Enable TOTP → save the 32-char base32 secret</li>
-              <li>The access token auto-refreshes daily</li>
+              <li>Enter PIN + TOTP SECRET above, click <strong>Refresh Token + Restart Engine</strong></li>
             </ol>
           </div>
           <div>
@@ -154,6 +272,7 @@ export default function SettingsPage() {
           </div>
         </div>
       </Section>
+
     </div>
   )
 }
