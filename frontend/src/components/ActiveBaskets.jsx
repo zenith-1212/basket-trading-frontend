@@ -1,14 +1,9 @@
 /**
- * ActiveBaskets.jsx — v2.2
+ * ActiveBaskets.jsx — v2.1
  * =========================
- * BUG FIX (v2.2): Manual exit was sending original side (e.g. BUY) to broker
- *   instead of the REVERSED side (SELL) needed to CLOSE the position.
- *   This caused the broker to open a NEW position instead of squaring off,
- *   which looked like "re-buy after manual exit".
- *
- * Fix: exit() now sends `side: o.side === 'BUY' ? 'SELL' : 'BUY'`
- *
- * Also added: auto_loop: false on all manual exits so backend never re-enters.
+ * FIX #3: "Edit Order" button — allows modifying limit price / SL on active orders.
+ * FIX #4: Exit now calls POST /api/orders/exit_basket to square off in demat.
+ * FIX #5: Exit orders now include live LTP (from basketPrices) so price is never ₹0.
  */
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -305,18 +300,16 @@ function BasketCard({ basket, index }) {
           body: JSON.stringify({
             basket_id: basket.id,
             exit_type: 'MANUAL',
-            // auto_loop=false on manual exit — backend must NOT re-enter
-            auto_loop: false,
+            auto_loop: false,  // manual exit never re-enters
             orders: basket.orders.map(o => {
+              // FIX #5: always use live LTP from basketPrices so price is never ₹0
               const liveLtp = basketPrices[o.trd_symbol] || o.entry_price || 0
               return {
                 symbol:      o.symbol,
                 strike:      o.strike,
                 option_type: o.option_type,
                 expiry:      o.expiry,
-                // BUG FIX: reverse the side to CLOSE the position, not open a new one
-                // Original BUY position → place SELL to square off
-                // Original SELL position → place BUY to square off
+                // FIXED: reverse side to CLOSE position (BUY→SELL, SELL→BUY)
                 side:        o.side?.toUpperCase() === 'BUY' ? 'SELL' : 'BUY',
                 quantity:    o.quantity,
                 order_type:  'MKT',
