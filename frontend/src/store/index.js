@@ -244,7 +244,7 @@ export const useStore = create((set, get) => ({
     set({ isLive: v })
     if (v) {
       try {
-        const API   = import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
+        const API   = import.meta.env.VITE_API_URL || 'https://api.baskettrading.in'
         const token = get().token
         const headers = { 'Content-Type': 'application/json' }
         if (token) headers['Authorization'] = `Bearer ${token}`
@@ -567,7 +567,7 @@ export const useStore = create((set, get) => ({
 
     if (!silent) set({ chainLoading: true })
 
-    const API = import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
+    const API = import.meta.env.VITE_API_URL || 'https://api.baskettrading.in'
     const ymd = toYmd(expiry)
 
     const candidates = [ymd]
@@ -674,47 +674,54 @@ export const useStore = create((set, get) => ({
   })),
 
   fetchActiveBaskets: async () => {
-    const { token, activeBaskets, addActiveBasket } = get()
+    const { token, activeBaskets, addActiveBasket, logout } = get()
     if (!token) return
-    const API = import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
+    const API = import.meta.env.VITE_API_URL || 'https://api.baskettrading.in'
     set({ basketsLoading: true, basketsLoadError: null })
     try {
       const res = await fetch(`${API}/api/baskets/active`, {
         headers: { Authorization: `Bearer ${token}` },
       })
+      // Token expired or invalid → log out so login screen appears
+      if (res.status === 401) {
+        console.warn('[STORE] Token expired — logging out')
+        logout()
+        return
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const rows = await res.json()
-      const existingIds = new Set(activeBaskets.map(b => b.id))
-      rows.forEach(row => {
-        if (existingIds.has(row.id)) return
-        addActiveBasket({
-          id:           row.id,
-          symbol:       row.orders?.[0]?.symbol || 'UNKNOWN',
-          orders:       (row.orders || []).map(o => ({
-            symbol:      o.symbol,
-            strike:      o.strike,
-            option_type: o.option_type,
-            expiry:      o.expiry,
-            side:        o.side,
-            quantity:    o.quantity,
-            entry_price: parseFloat(o.entry_price) || 0,
-            trd_symbol:  o.trd_symbol || '',
-            order_id:    o.order_id  || '',
-          })),
-          lockedProfit: parseFloat(row.locked_profit) || 0,
-          lockedLoss:   parseFloat(row.locked_loss)   || 0,
-          autoLoop:     row.auto_loop ?? true,
-          pnl:          parseFloat(row.current_pnl)   || 0,
-          status:       'ACTIVE',
-          mode:         row.mode || 'PAPER',
-          loop:         row.loop_number || 1,
-          entryTime:    row.entry_time
-            ? new Date(row.entry_time).toLocaleTimeString('en-IN')
-            : '--:--',
-          _fromDB: true,
-        })
-      })
-      set({ basketsLoading: false })
+      // Full replace: set all DB baskets, don't just append
+      // This ensures a clean state on every page load
+      const dbBaskets = rows.map(row => ({
+        id:           row.id,
+        symbol:       row.orders?.[0]?.symbol || 'UNKNOWN',
+        orders:       (row.orders || []).map(o => ({
+          symbol:      o.symbol,
+          strike:      o.strike,
+          option_type: o.option_type,
+          expiry:      o.expiry,
+          side:        o.side,
+          quantity:    o.quantity,
+          entry_price: parseFloat(o.entry_price) || 0,
+          trd_symbol:  o.trd_symbol || '',
+          order_id:    o.order_id  || '',
+        })),
+        lockedProfit: parseFloat(row.locked_profit) || 0,
+        lockedLoss:   parseFloat(row.locked_loss)   || 0,
+        autoLoop:     row.auto_loop ?? true,
+        pnl:          parseFloat(row.current_pnl)   || 0,
+        status:       'ACTIVE',
+        mode:         row.mode || 'PAPER',
+        loop:         row.loop_number || 1,
+        entryTime:    row.entry_time
+          ? new Date(row.entry_time).toLocaleTimeString('en-IN')
+          : '--:--',
+        _fromDB: true,
+      }))
+      // Merge: keep any in-memory baskets not yet in DB (just placed, not yet saved)
+      const dbIds = new Set(dbBaskets.map(b => b.id))
+      const memOnly = activeBaskets.filter(b => !b._fromDB && !dbIds.has(b.id))
+      set({ activeBaskets: [...dbBaskets, ...memOnly], basketsLoading: false })
     } catch (err) {
       console.warn('[STORE] fetchActiveBaskets error:', err)
       set({ basketsLoading: false, basketsLoadError: err.message })
