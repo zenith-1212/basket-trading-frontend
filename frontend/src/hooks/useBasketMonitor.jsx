@@ -189,40 +189,117 @@ export function useBasketMonitor() {
     delete lastSyncRef.current[basket.id]
     delete lastPnlRef.current[basket.id]
 
-    // ── STEP 4: Auto-loop — add new basket to UI if backend created one ───────
-    // Backend creates the new DB basket and returns it in new_basket.
-    // For LIVE mode: backend does NOT place new broker orders automatically —
-    // that is intentional. The new basket tracks the same symbol/strikes at
-    // current LTP as the new entry price. The user placed the original orders
-    // manually; re-entry reuses the same legs with updated entry prices.
+    // ── STEP 4: Auto-loop — place real broker orders + add to UI ────────────
     if (autoLoop && dbData?.re_entered && dbData?.new_basket) {
-      const nb = dbData.new_basket
-      const newBasket = {
-        id:           nb.id,
-        symbol:       basket.symbol,
-        orders:       (nb.orders || basket.orders).map(o => ({
-          symbol:      o.symbol,
-          strike:      o.strike,
-          option_type: o.option_type,
-          expiry:      o.expiry,
-          side:        o.side,
-          quantity:    o.quantity,
-          entry_price: parseFloat(o.entry_price) || 0,
-          trd_symbol:  o.trd_symbol || '',
-          order_id:    o.order_id  || '',
-        })),
-        lockedProfit: basket.lockedProfit,
-        lockedLoss:   basket.lockedLoss,
-        autoLoop:     true,
-        pnl:          0,
-        status:       'ACTIVE',
-        mode:         basket.mode,
-        loop:         nb.loop_number || (basket.loop || 1) + 1,
-        entryTime:    new Date().toLocaleTimeString('en-IN'),
+      const nb       = dbData.new_basket
+      const loopNum  = nb.loop_number || (basket.loop || 1) + 1
+      const prices   = pricesRef.current
+      const srcOrders = nb.orders || basket.orders
+
+      // For LIVE mode: place actual broker orders at current market price
+      if (!isPaper && srcOrders.length > 0) {
+        try {
+          toast(`🔁 Auto-loop ${loopNum}: placing new entry orders...`, { duration: 3000 })
+
+          const entryLegs = srcOrders.map(o => ({
+            symbol:      o.symbol,
+            strike:      o.strike,
+            option_type: o.option_type,
+            expiry:      o.expiry,
+            side:        o.side,   // original side — re-entering same direction
+            quantity:    o.quantity,
+            order_type:  'MKT',
+            product:     'MIS',
+            trd_symbol:  o.trd_symbol || '',
+            ltp:         prices[o.trd_symbol] || parseFloat(o.entry_price) || 0,
+            price:       prices[o.trd_symbol] || parseFloat(o.entry_price) || 0,
+          }))
+
+          console.log('[MONITOR] Auto-loop placing new entry orders:', entryLegs)
+
+          const entryRes = await fetch(`${API()}/api/orders/place_basket`, {
+            method:  'POST',
+            headers: authHeaders(),
+            body:    JSON.stringify({ orders: entryLegs }),
+          })
+
+          const entryData = entryRes.ok ? await entryRes.json() : null
+          console.log('[MONITOR] Auto-loop entry result:', entryData)
+
+          if (!entryRes.ok || !entryData) {
+            toast.error(`⚠️ Auto-loop ${loopNum}: broker entry failed — positions not re-entered!`, { duration: 10000 })
+          } else if (entryData.failed > 0) {
+            toast.error(`⚠️ Auto-loop ${loopNum}: ${entryData.failed} leg(s) failed to enter. Check demat!`, { duration: 10000 })
+          } else {
+            // Update order IDs in the DB basket with actual broker order IDs
+            const updatedOrders = srcOrders.map((o, i) => ({
+              ...o,
+              entry_price: prices[o.trd_symbol] || parseFloat(o.entry_price) || 0,
+              order_id:    entryData.results?.[i]?.order_id || '',
+            }))
+
+            // Patch the DB basket's orders with real entry prices + order IDs
+            try {
+              await fetch(`${API()}/api/baskets/${nb.id}/update_orders`, {
+                method:  'POST',
+                headers: authHeaders(),
+                body:    JSON.stringify({ orders: updatedOrders }),
+              })
+            } catch (e) {
+              console.warn('[MONITOR] Could not patch order IDs (non-fatal):', e)
+            }
+
+            const newBasket = {
+              id:           nb.id,
+              symbol:       basket.symbol,
+              orders:       updatedOrders,
+              lockedProfit: basket.lockedProfit,
+              lockedLoss:   basket.lockedLoss,
+              autoLoop:     true,
+              pnl:          0,
+              status:       'ACTIVE',
+              mode:         basket.mode,
+              loop:         loopNum,
+              entryTime:    new Date().toLocaleTimeString('en-IN'),
+            }
+            addActiveBasket(newBasket)
+            toast.success(`🔁 Auto-loop ${loopNum}: ${entryData.placed} order(s) placed!`, { duration: 5000 })
+            console.log('[MONITOR] Auto-loop re-entry live basket added:', newBasket)
+          }
+
+        } catch (err) {
+          console.error('[MONITOR] Auto-loop entry error:', err)
+          toast.error(`⚠️ Auto-loop ${loopNum}: network error placing orders. Check demat!`, { duration: 10000 })
+        }
+
+      } else {
+        // PAPER mode — no broker call needed, just add to UI
+        const newBasket = {
+          id:           nb.id,
+          symbol:       basket.symbol,
+          orders:       srcOrders.map(o => ({
+            symbol:      o.symbol,
+            strike:      o.strike,
+            option_type: o.option_type,
+            expiry:      o.expiry,
+            side:        o.side,
+            quantity:    o.quantity,
+            entry_price: prices[o.trd_symbol] || parseFloat(o.entry_price) || 0,
+            trd_symbol:  o.trd_symbol || '',
+            order_id:    '',
+          })),
+          lockedProfit: basket.lockedProfit,
+          lockedLoss:   basket.lockedLoss,
+          autoLoop:     true,
+          pnl:          0,
+          status:       'ACTIVE',
+          mode:         basket.mode,
+          loop:         loopNum,
+          entryTime:    new Date().toLocaleTimeString('en-IN'),
+        }
+        addActiveBasket(newBasket)
+        toast(`🔁 Auto-loop ${loopNum}: paper re-entered`, { duration: 4000 })
       }
-      addActiveBasket(newBasket)
-      toast(`🔁 Auto-loop: basket re-entered (Loop ${newBasket.loop})`, { duration: 4000 })
-      console.log('[MONITOR] Auto-loop re-entry added to UI:', newBasket)
     }
 
     return true
