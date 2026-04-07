@@ -35,7 +35,7 @@ const POLL_MS    = 500
 const DB_SYNC_MS = 30_000
 
 // Reads VITE_API_URL at runtime, falls back to the deployed backend
-const API = () => import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
+const API = () => import.meta.env.VITE_API_URL || 'https://api.baskettrading.in'
 
 export function useBasketMonitor() {
   const {
@@ -92,14 +92,14 @@ export function useBasketMonitor() {
     if (!isPaper && orders.length > 0) {
       const prices = pricesRef.current
 
-      // Frontend reverses the side here: BUY→SELL, SELL→BUY
-      // Backend MUST NOT reverse again (fixed in orders.py)
+      // Send ORIGINAL side — backend exit_basket reverses it (BUY→SELL, SELL→BUY)
+      // DO NOT reverse here — doing so causes double-reversal = wrong direction order
       const exitLegs = orders.map(order => ({
         symbol:      order.symbol,
         strike:      order.strike,
         option_type: order.option_type,
         expiry:      order.expiry,
-        side:        order.side?.toUpperCase() === 'BUY' ? 'SELL' : 'BUY',
+        side:        order.side,   // original side — backend will reverse
         quantity:    order.quantity,
         order_type:  'MKT',
         product:     'MIS',
