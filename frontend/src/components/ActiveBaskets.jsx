@@ -1,9 +1,15 @@
 /**
- * ActiveBaskets.jsx — v2.1
+ * ActiveBaskets.jsx — v2.2
  * =========================
  * FIX #3: "Edit Order" button — allows modifying limit price / SL on active orders.
  * FIX #4: Exit now calls POST /api/orders/exit_basket to square off in demat.
  * FIX #5: Exit orders now include live LTP (from basketPrices) so price is never ₹0.
+ * FIX #6: CRITICAL — removed double side-reversal bug.
+ *         Frontend was reversing BUY→SELL before sending, AND backend exit_basket
+ *         was reversing again (SELL→BUY), resulting in orders placed in the SAME
+ *         direction as the original entry instead of closing the position.
+ *         Fix: send ORIGINAL side from frontend; backend reverses once to square off.
+ *         (useBasketMonitor.jsx already did this correctly — manual exit now matches.)
  */
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -309,8 +315,10 @@ function BasketCard({ basket, index }) {
                 strike:      o.strike,
                 option_type: o.option_type,
                 expiry:      o.expiry,
-                // FIXED: reverse side to CLOSE position (BUY→SELL, SELL→BUY)
-                side:        o.side?.toUpperCase() === 'BUY' ? 'SELL' : 'BUY',
+                // FIX #6: send ORIGINAL side — backend exit_basket reverses it once.
+                // Do NOT reverse here — that caused double-reversal: BUY→SELL (frontend)
+                // then SELL→BUY (backend) = same direction as entry = position stays open.
+                side:        o.side,
                 quantity:    o.quantity,
                 order_type:  'MKT',
                 product:     o.product || 'MIS',
