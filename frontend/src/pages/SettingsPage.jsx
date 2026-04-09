@@ -2,7 +2,7 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { useStore } from '../store'
 
-const API = () => import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
+const API = () => import.meta.env.VITE_API_URL || 'https://api.baskettrading.in'
 
 function Section({ title, children }) {
   return (
@@ -29,7 +29,7 @@ export default function SettingsPage() {
   const { token } = useStore()
 
   const [engine, setEngine] = useState(() => ({
-    url: localStorage.getItem('engine_url') || 'https://basket-trading-backend.onrender.com'
+    url: localStorage.getItem('engine_url') || 'https://api.baskettrading.in'
   }))
   const [engineStatus, setEngineStatus] = useState(null)
 
@@ -122,11 +122,14 @@ export default function SettingsPage() {
       setDhanFields(f => ({ ...f, access_token: data.token_preview + ' (saved to backend .env)' }))
       localStorage.setItem('dhan_config', JSON.stringify({ ...dhanFields, access_token: data.token_preview }))
 
-      const restartNote = data.engine_restart?.status === 'restarted'
-        ? `Engine restarted (${data.engine_restart.service})`
-        : data.engine_restart?.status === 'reloaded'
-        ? 'Engine reloaded via HTTP'
-        : data.engine_restart?.note || 'Engine restart attempted'
+      const reloadInfo = data.engine_reload || data.engine_restart || {}
+      const restartNote = reloadInfo.status === 'ok'
+        ? 'Engine token hot-reloaded ✓ (no restart)'
+        : reloadInfo.status === 'restarted'
+        ? `Engine restarted (${reloadInfo.service})`
+        : reloadInfo.error
+        ? `Engine: ${reloadInfo.error}`
+        : 'Token saved to .env'
 
       setRefreshStatus('ok')
       setRefreshMsg(`✅ Token refreshed · ${restartNote}`)
@@ -217,11 +220,11 @@ export default function SettingsPage() {
               }}>
               {refreshing
                 ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⏳</span> Refreshing...</>
-                : '🔄 Refresh Token + Restart Engine'}
+                : '🔄 Refresh Dhan Token'}
             </button>
           </div>
           <div style={{ fontSize:10, color:'var(--text3)', marginTop:6, lineHeight:1.6 }}>
-            Fetches a new Dhan access token using your credentials → saves it to backend .env → restarts the trading engine automatically.
+            Fetches a new Dhan access token → saves it to .env → hot-reloads engine WebSocket (no restart needed).
           </div>
         </Section>
 
