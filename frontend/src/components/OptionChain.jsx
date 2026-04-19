@@ -124,6 +124,7 @@ export default function OptionChain() {
     addToBasket({
       id: Date.now(), symbol: selectedSymbol, strike: row.strike,
       option_type: optType, expiry: selectedExpiry, side,
+      lot_count: 1,
       quantity: LOT_SIZES[selectedSymbol] || 75, entry_price: ltp,
       trd_symbol,
     })
