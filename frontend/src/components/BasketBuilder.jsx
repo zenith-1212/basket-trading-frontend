@@ -1,10 +1,76 @@
-import { useState } from 'react'
-import { useStore, LOT_SIZES } from '../store'
+import { useState, useCallback } from 'react'
+import { useStore, LOT_SIZES, MAX_LOTS } from '../store'
 import toast from 'react-hot-toast'
 
 const isMobile = () => window.innerWidth < 768
 const API = () => import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
 
+// ── Lot stepper button style ──────────────────────────────────────────────────
+const lotBtnStyle = {
+  width: 26, height: 26, borderRadius: 5,
+  border: '1px solid var(--border)',
+  background: '#fff', color: 'var(--text2)',
+  fontSize: 16, fontWeight: 700,
+  cursor: 'pointer', touchAction: 'manipulation',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  lineHeight: 1, flexShrink: 0, userSelect: 'none',
+  WebkitTapHighlightColor: 'transparent',
+}
+
+// ── Per-order LOT counter component ──────────────────────────────────────────
+function LotStepper({ order, index }) {
+  const { updateLotCount } = useStore()
+  const lotSize   = LOT_SIZES[order.symbol] || 75
+  const lotCount  = order.lot_count ?? 1
+  const canDec    = lotCount > 1
+  const canInc    = lotCount < MAX_LOTS
+
+  // Debounce rapid taps: track last update per index
+  const handleChange = useCallback((delta) => {
+    updateLotCount(index, delta)
+  }, [index, updateLotCount])
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 6 }}>
+      <span style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600, minWidth: 24 }}>LOT</span>
+
+      {/* Decrement */}
+      <button
+        style={{ ...lotBtnStyle, color: canDec ? 'var(--red-txt)' : 'var(--border2)', borderColor: canDec ? 'var(--border)' : 'var(--border2)' }}
+        onClick={() => canDec && handleChange(-1)}
+        aria-label="Remove 1 lot"
+      >−</button>
+
+      {/* Count display */}
+      <span style={{
+        minWidth: 28, textAlign: 'center',
+        fontSize: 13, fontWeight: 700,
+        color: 'var(--blue)', fontFamily: 'var(--mono)',
+      }}>
+        {lotCount}
+      </span>
+
+      {/* Increment */}
+      <button
+        style={{ ...lotBtnStyle, color: canInc ? 'var(--green-txt)' : 'var(--border2)', borderColor: canInc ? 'var(--border)' : 'var(--border2)' }}
+        onClick={() => canInc && handleChange(+1)}
+        aria-label="Add 1 lot"
+      >+</button>
+
+      {/* Qty label */}
+      <span style={{ fontSize: 10, color: 'var(--text3)', fontFamily: 'var(--mono)', marginLeft: 2 }}>
+        = {order.quantity} qty
+      </span>
+
+      {/* Max warning */}
+      {lotCount >= MAX_LOTS && (
+        <span style={{ fontSize: 9, color: 'var(--red-txt)', fontWeight: 600 }}>MAX</span>
+      )}
+    </div>
+  )
+}
+
+// ── Main BasketBuilder ────────────────────────────────────────────────────────
 export default function BasketBuilder() {
   const {
     basket, basketSize, setBasketSize, removeFromBasket, clearBasket,
@@ -20,19 +86,45 @@ export default function BasketBuilder() {
   const totalValue = basket.reduce((s, o) => s + o.entry_price * o.quantity, 0)
   const mobile     = isMobile()
 
+  // ── Build order payload — always include lot_count + final quantity ──────
+  function buildOrderPayload(o, overrides = {}) {
+    const lotSize    = LOT_SIZES[o.symbol] || 75
+    const lot_count  = o.lot_count ?? 1
+    const quantity   = lot_count * lotSize
+    return {
+      symbol:      o.symbol,
+      strike:      o.strike,
+      option_type: o.option_type,
+      expiry:      o.expiry,
+      side:        o.side,
+      lot_count,          // ← NEW: backend uses this for validation/logging
+      quantity,           // ← derived: lot_count × lot_size
+      lot_size:    lotSize,
+      order_type:  'MKT',
+      product:     'MIS',
+      trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
+      ...overrides,
+    }
+  }
+
   async function execute() {
     if (isEmpty)           { toast.error('Add orders to basket first'); return }
     if (lockedProfit <= 0) { toast.error('Set target profit > 0');      return }
     if (lockedLoss   <= 0) { toast.error('Set stop loss > 0');           return }
 
-    // Idempotency key — generated once at click time, before any async work.
-    // If the user refreshes mid-execution, the same key prevents a duplicate DB row.
+    // Validate all lots > 0 (guard against corrupt state)
+    const badLot = basket.find(o => (o.lot_count ?? 1) < 1)
+    if (badLot) { toast.error('All orders must have at least 1 lot'); return }
+
     const clientBasketId = `${token || 'anon'}_${Date.now()}`
 
     if (isLive) {
       const ok = window.confirm(
-        `\u26a0\ufe0f LIVE MODE \u2014 ${basket.length} REAL order(s) will be placed on Kotak Neo!\n\n` +
-        basket.map(o => `${o.side} ${o.symbol} ${o.strike} ${o.option_type} \xd7 ${o.quantity}`).join('\n') +
+        `⚠️ LIVE MODE — ${basket.length} REAL order(s) will be placed on Kotak Neo!\n\n` +
+        basket.map(o => {
+          const lc = o.lot_count ?? 1
+          return `${o.side} ${o.symbol} ${o.strike} ${o.option_type} × ${o.quantity} (${lc} lot${lc > 1 ? 's' : ''})`
+        }).join('\n') +
         `\n\nConfirm?`
       )
       if (!ok) return
@@ -52,17 +144,9 @@ export default function BasketBuilder() {
             orders: basket.map(o => {
               const liveLtp = basketPrices[o.trd_symbol] || o.entry_price || 0
               return {
-                symbol:      o.symbol,
-                strike:      o.strike,
-                option_type: o.option_type,
-                expiry:      o.expiry,
-                side:        o.side,
-                quantity:    o.quantity,
-                order_type:  'MKT',
-                product:     'MIS',
-                trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
-                ltp:         liveLtp,
-                price:       liveLtp,
+                ...buildOrderPayload(o),
+                ltp:   liveLtp,
+                price: liveLtp,
               }
             }),
           }),
@@ -78,7 +162,7 @@ export default function BasketBuilder() {
             { id: 'exec', duration: 6000 }
           )
         } else {
-          toast.success(`\u2705 ${kotakData.placed} order(s) placed on Kotak Neo!`, { id: 'exec' })
+          toast.success(`✅ ${kotakData.placed} order(s) placed on Kotak Neo!`, { id: 'exec' })
         }
 
         // Step 2: Persist basket to DB (idempotent via client_basket_id)
@@ -96,15 +180,10 @@ export default function BasketBuilder() {
             mode:             'LIVE',
             client_basket_id: clientBasketId,
             orders: basket.map((o, i) => ({
-              symbol:      o.symbol,
-              strike:      o.strike,
-              option_type: o.option_type,
-              expiry:      o.expiry,
-              side:        o.side,
-              quantity:    o.quantity,
-              entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
-              trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
-              order_id:    kotakData.results?.[i]?.order_id || '',
+              ...buildOrderPayload(o, {
+                entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+                order_id:    kotakData.results?.[i]?.order_id || '',
+              }),
             })),
           }),
         })
@@ -113,19 +192,18 @@ export default function BasketBuilder() {
         if (dbRes.ok) {
           savedBasket = await dbRes.json()
         } else {
-          // Get the actual error from the backend for debugging
           let errDetail = `HTTP ${dbRes.status}`
           try { const errBody = await dbRes.json(); errDetail = errBody.detail || JSON.stringify(errBody) } catch {}
           console.warn('[EXEC] DB persist failed:', errDetail)
-          toast(`\u26a0\ufe0f Trade placed but not saved to DB: ${errDetail}`, { duration: 8000 })
+          toast(`⚠️ Trade placed but not saved to DB: ${errDetail}`, { duration: 8000 })
         }
 
-        // Step 3: Add to store using DB UUID (falls back to clientBasketId if DB failed)
         addActiveBasket({
           id:      savedBasket?.id || clientBasketId,
           symbol:  selectedSymbol,
           orders:  savedBasket?.orders || basket.map((o, i) => ({
             ...o,
+            lot_count:   o.lot_count ?? 1,
             entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
             trd_symbol:  o.trd_symbol || '',
             order_id:    kotakData.results?.[i]?.order_id || '',
@@ -145,7 +223,7 @@ export default function BasketBuilder() {
       }
 
     } else {
-      // Paper mode: persist to DB then add to store
+      // Paper mode
       setPlacing(true)
       toast.loading('Saving paper trade...', { id: 'exec' })
       try {
@@ -162,15 +240,10 @@ export default function BasketBuilder() {
             mode:             'PAPER',
             client_basket_id: clientBasketId,
             orders: basket.map(o => ({
-              symbol:      o.symbol,
-              strike:      o.strike,
-              option_type: o.option_type,
-              expiry:      o.expiry,
-              side:        o.side,
-              quantity:    o.quantity,
-              entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
-              trd_symbol:  o.trd_symbol || o.ce_token || o.pe_token || '',
-              order_id:    '',
+              ...buildOrderPayload(o, {
+                entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+                order_id:    '',
+              }),
             })),
           }),
         })
@@ -182,6 +255,7 @@ export default function BasketBuilder() {
           symbol:  selectedSymbol,
           orders:  savedBasket?.orders || basket.map(o => ({
             ...o,
+            lot_count:   o.lot_count ?? 1,
             entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
             trd_symbol:  o.trd_symbol || '',
           })),
@@ -191,14 +265,14 @@ export default function BasketBuilder() {
           mode: 'PAPER',
         })
         clearBasket()
-        toast.success('\u2705 Basket executed in PAPER mode', { id: 'exec' })
+        toast.success('✅ Basket executed in PAPER mode', { id: 'exec' })
       } catch (err) {
-        // Fallback: still add to memory so trade isn't lost
         addActiveBasket({
           id:      clientBasketId,
           symbol:  selectedSymbol,
           orders:  basket.map(o => ({
             ...o,
+            lot_count:   o.lot_count ?? 1,
             entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
             trd_symbol:  o.trd_symbol || '',
           })),
@@ -230,7 +304,6 @@ export default function BasketBuilder() {
     }
   }
 
-  // On mobile: full width, no overflow:hidden
   const outerStyle = mobile
     ? { width: '100%', background: 'var(--bg-white)' }
     : { width: 290, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg-white)', borderRight: '1px solid var(--border)' }
@@ -238,11 +311,10 @@ export default function BasketBuilder() {
   return (
     <div style={outerStyle}>
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', background: 'var(--bg-panel)', flexShrink: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>Basket Builder</div>
-          {/* Live balance pill */}
           {isLive && liveBalance > 0 && (
             <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--green-txt)', background: 'var(--green-dim)', padding: '2px 8px', borderRadius: 10 }}>
               ₹{liveBalance.toLocaleString('en-IN', { maximumFractionDigits: 0 })} available
@@ -255,36 +327,22 @@ export default function BasketBuilder() {
             }}>↻ Load Balance</button>
           )}
         </div>
+        {/* Basket SIZE stepper */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 10, color: 'var(--text3)', marginRight: 2 }}>SIZE</span>
           <button
             onClick={() => setBasketSize(Math.max(1, basketSize - 1))}
-            style={{
-              width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)',
-              background: '#fff', color: 'var(--text2)', fontSize: 18, fontWeight: 700,
-              cursor: 'pointer', touchAction: 'manipulation', display: 'flex',
-              alignItems: 'center', justifyContent: 'center', lineHeight: 1,
-              flexShrink: 0,
-            }}
+            style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)', background: '#fff', color: 'var(--text2)', fontSize: 18, fontWeight: 700, cursor: 'pointer', touchAction: 'manipulation', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, flexShrink: 0 }}
           >−</button>
-          <span style={{
-            minWidth: 32, textAlign: 'center', fontSize: 14, fontWeight: 700,
-            color: 'var(--blue)', fontFamily: 'var(--mono)',
-          }}>{basketSize}</span>
+          <span style={{ minWidth: 32, textAlign: 'center', fontSize: 14, fontWeight: 700, color: 'var(--blue)', fontFamily: 'var(--mono)' }}>{basketSize}</span>
           <button
             onClick={() => setBasketSize(basketSize + 1)}
-            style={{
-              width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)',
-              background: '#fff', color: 'var(--text2)', fontSize: 18, fontWeight: 700,
-              cursor: 'pointer', touchAction: 'manipulation', display: 'flex',
-              alignItems: 'center', justifyContent: 'center', lineHeight: 1,
-              flexShrink: 0,
-            }}
+            style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)', background: '#fff', color: 'var(--text2)', fontSize: 18, fontWeight: 700, cursor: 'pointer', touchAction: 'manipulation', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, flexShrink: 0 }}
           >+</button>
         </div>
       </div>
 
-      {/* Orders list */}
+      {/* ── Orders list ── */}
       <div style={mobile
         ? { padding: '6px' }
         : { flex: 1, overflow: 'auto', minHeight: 0 }
@@ -301,7 +359,8 @@ export default function BasketBuilder() {
                 marginBottom: 5, padding: '10px 12px', borderRadius: 8,
                 background: 'var(--bg-panel)', border: '1px solid var(--border)',
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+                {/* Top row: badge + symbol + remove */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
                   <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
                     <span className={`badge ${order.side === 'BUY' ? 'badge-green' : 'badge-red'}`}>{order.side}</span>
                     <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
@@ -314,17 +373,22 @@ export default function BasketBuilder() {
                     touchAction: 'manipulation',
                   }}>×</button>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text2)' }}>
-                  <span style={{ fontFamily: 'var(--mono)' }}>₹{order.entry_price.toFixed(1)} × {order.quantity}</span>
+
+                {/* Price + expiry */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text2)', marginBottom: 2 }}>
+                  <span style={{ fontFamily: 'var(--mono)' }}>₹{order.entry_price.toFixed(1)}</span>
                   <span style={{ color: 'var(--text3)' }}>{order.expiry}</span>
                 </div>
+
+                {/* ── LOT STEPPER ── */}
+                <LotStepper order={order} index={i} />
               </div>
             ))}
           </div>
         )}
       </div>
 
-      {/* Total */}
+      {/* ── Total ── */}
       {!isEmpty && (
         <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', flexShrink: 0, background: 'var(--bg-panel)' }}>
           <span style={{ fontSize: 11, color: 'var(--text3)' }}>Total Premium</span>
@@ -334,7 +398,7 @@ export default function BasketBuilder() {
         </div>
       )}
 
-      {/* Config: Target / SL / AutoLoop */}
+      {/* ── Target / SL / AutoLoop ── */}
       <div style={{ padding: '12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
           <div>
@@ -358,7 +422,7 @@ export default function BasketBuilder() {
         </div>
       </div>
 
-      {/* Execute buttons */}
+      {/* ── Execute ── */}
       <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexShrink: 0 }}>
         <button className="btn btn-outline btn-sm" onClick={clearBasket} disabled={isEmpty || placing}
           style={{ fontSize: 12, touchAction: 'manipulation' }}>Clear</button>
