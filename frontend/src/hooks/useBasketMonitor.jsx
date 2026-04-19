@@ -99,8 +99,9 @@ export function useBasketMonitor() {
         strike:      order.strike,
         option_type: order.option_type,
         expiry:      order.expiry,
-        side:        order.side,   // original side — backend will reverse
-        quantity:    order.quantity,
+        side:        order.side,       // original side — backend will reverse
+        lot_count:   order.lot_count ?? 1,     // ← lot info for broker engine
+        quantity:    order.quantity,           // final qty = lot_count × lot_size
         order_type:  'MKT',
         product:     'MIS',
         trd_symbol:  order.trd_symbol || '',
@@ -206,8 +207,9 @@ export function useBasketMonitor() {
             strike:      o.strike,
             option_type: o.option_type,
             expiry:      o.expiry,
-            side:        o.side,   // original side — re-entering same direction
-            quantity:    o.quantity,
+            side:        o.side,       // original side — re-entering same direction
+            lot_count:   o.lot_count ?? 1,    // ← preserve lot size on re-entry
+            quantity:    o.quantity,          // final qty = lot_count × lot_size
             order_type:  'MKT',
             product:     'MIS',
             trd_symbol:  o.trd_symbol || '',
@@ -283,6 +285,7 @@ export function useBasketMonitor() {
             option_type: o.option_type,
             expiry:      o.expiry,
             side:        o.side,
+            lot_count:   o.lot_count ?? 1,   // ← preserve lot size on re-entry
             quantity:    o.quantity,
             entry_price: prices[o.trd_symbol] || parseFloat(o.entry_price) || 0,
             trd_symbol:  o.trd_symbol || '',
