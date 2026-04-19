@@ -14,6 +14,7 @@
 import { create } from 'zustand'
 
 export const LOT_SIZES  = { NIFTY:65, BANKNIFTY:30, FINNIFTY:40, SENSEX:20, MIDCPNIFTY:120 }
+export const MAX_LOTS   = 50   // Safety cap — raise if needed
 export const STRIKE_GAP = { NIFTY:50, BANKNIFTY:100, SENSEX:100, FINNIFTY:50, MIDCPNIFTY:25 }
 
 const MON_MAP = {
@@ -637,9 +638,21 @@ export const useStore = create((set, get) => ({
   basket:           [],
   basketSize:       4,
   setBasketSize:    (n)     => set({ basketSize: n }),
-  addToBasket:      (order) => set(s => s.basket.length >= s.basketSize ? s : { basket: [...s.basket, order] }),
+  addToBasket:      (order) => set(s => s.basket.length >= s.basketSize ? s : {
+    basket: [...s.basket, { ...order, lot_count: order.lot_count ?? 1 }]
+  }),
   removeFromBasket: (idx)   => set(s => ({ basket: s.basket.filter((_,i) => i !== idx) })),
   clearBasket:      ()      => set({ basket: [] }),
+  // Update lot_count for a specific basket item; quantity is derived on the fly
+  updateLotCount: (idx, delta) => set(s => {
+    const basket = [...s.basket]
+    if (!basket[idx]) return s
+    const lotSize  = LOT_SIZES[basket[idx].symbol] || 75
+    const current  = basket[idx].lot_count ?? 1
+    const next     = Math.max(1, Math.min(MAX_LOTS, current + delta))
+    basket[idx]    = { ...basket[idx], lot_count: next, quantity: next * lotSize }
+    return { basket }
+  }),
 
   lockedProfit:    3000,
   lockedLoss:      1500,
