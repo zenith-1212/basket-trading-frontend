@@ -1,12 +1,15 @@
 /**
- * store/index.js — v5.4  (CORRECT EXPIRY WEEKDAY FIX — weekly + monthly)
- * ========================================================================
- * Key fix: getExpiries() now generates correct weekday per symbol:
- *   NIFTY       → every Thursday  (weekly AND monthly)
- *   BANKNIFTY   → every Wednesday (weekly), last Tuesday (monthly)
- *   SENSEX      → every Friday    (weekly AND monthly)
- *   FINNIFTY    → every Tuesday   (weekly AND monthly)
- *   MIDCPNIFTY  → every Monday    (weekly AND monthly)
+ * store/index.js — v5.5  (CORRECT EXPIRY WEEKDAY FIX — post Sep-2025 SEBI change)
+ * ================================================================================
+ * NSE (effective Sep 2, 2025):
+ *   NIFTY       → every Tuesday   (weekly AND monthly last Tuesday)
+ *   BANKNIFTY   → last Tuesday    (monthly only — no more weekly)
+ *   FINNIFTY    → last Tuesday    (monthly only)
+ *   MIDCPNIFTY  → last Tuesday    (monthly only)
+ *
+ * BSE (effective Sep 4, 2025):
+ *   SENSEX      → every Thursday  (weekly AND monthly last Thursday)
+ *   BANKEX      → last Thursday   (monthly only)
  *
  * Holiday adjustment: if computed day is a market holiday,
  * shifts to previous trading day.
@@ -55,25 +58,24 @@ const MARKET_HOLIDAYS = new Set([
 ])
 
 // JS getDay(): 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
-// Weekly expiry weekday per symbol
+// Weekly expiry weekday per symbol (post Sep-2025 SEBI change)
 const EXPIRY_WEEKDAY = {
-  NIFTY:      4,  // Thursday
-  BANKNIFTY:  3,  // Wednesday
-  SENSEX:     5,  // Friday
-  FINNIFTY:   2,  // Tuesday
-  MIDCPNIFTY: 1,  // Monday
-  BANKEX:     5,  // Friday
+  NIFTY:      2,  // Tuesday  (changed from Thursday, effective Sep 2, 2025)
+  BANKNIFTY:  2,  // Tuesday  (monthly only — weekly discontinued)
+  SENSEX:     4,  // Thursday (changed from Tuesday/Friday, effective Sep 4, 2025)
+  FINNIFTY:   2,  // Tuesday  (monthly only)
+  MIDCPNIFTY: 2,  // Tuesday  (monthly only)
+  BANKEX:     4,  // Thursday (monthly only)
 }
 
 // Monthly expiry weekday (last occurrence in month).
-// BANKNIFTY monthly = last Tuesday (NSE shifted from Thursday in 2024).
 const MONTHLY_EXPIRY_WEEKDAY = {
-  NIFTY:      4,  // Thursday  (same as weekly)
-  BANKNIFTY:  2,  // Tuesday   (different from weekly Wednesday!)
-  SENSEX:     5,  // Friday    (same as weekly)
-  FINNIFTY:   2,  // Tuesday   (same as weekly)
-  MIDCPNIFTY: 1,  // Monday    (same as weekly)
-  BANKEX:     5,  // Friday    (same as weekly)
+  NIFTY:      2,  // Tuesday  (last Tuesday of month)
+  BANKNIFTY:  2,  // Tuesday  (last Tuesday of month)
+  SENSEX:     4,  // Thursday (last Thursday of month)
+  FINNIFTY:   2,  // Tuesday  (last Tuesday of month)
+  MIDCPNIFTY: 2,  // Tuesday  (last Tuesday of month)
+  BANKEX:     4,  // Thursday (last Thursday of month)
 }
 
 function _toYYYYMMDD(d) {
