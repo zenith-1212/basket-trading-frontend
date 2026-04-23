@@ -13,7 +13,7 @@
  */
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useStore } from '../store'
+import { useStore, LOT_SIZES } from '../store'
 import toast from 'react-hot-toast'
 
 const isMobile = () => window.innerWidth < 768
@@ -451,7 +451,10 @@ function BasketCard({ basket, index }) {
 
         {/* Orders — FIX #3: each row has an Edit button (live mode only) */}
         <div style={{ marginBottom: 10 }}>
-          {basket.orders.map((o, i) => (
+          {basket.orders.map((o, i) => {
+            const lotSize = LOT_SIZES[o.symbol] || 75
+            const lots = o.lot_count ?? (o.quantity ? Math.round(o.quantity / lotSize) : 1)
+            return (
             <div key={i} style={{
               display: 'flex', gap: 6, fontSize: 12, alignItems: 'center',
               padding: '5px 0',
@@ -459,6 +462,17 @@ function BasketCard({ basket, index }) {
             }}>
               <span className={`badge ${o.side === 'BUY' ? 'badge-green' : 'badge-red'}`} style={{ fontSize: 9 }}>{o.side}</span>
               <span style={{ fontWeight: 600, flex: 1 }}>{o.symbol} {o.strike} {o.option_type}</span>
+              {/* Lots badge */}
+              <span
+                title={`${o.quantity || lots * lotSize} qty · 1 lot = ${lotSize}`}
+                style={{
+                  fontSize: 9, fontWeight: 700, padding: '1px 5px',
+                  borderRadius: 4, background: 'rgba(59,130,246,0.08)',
+                  border: '1px solid rgba(59,130,246,0.25)', color: 'var(--blue)',
+                  fontFamily: 'var(--mono)', whiteSpace: 'nowrap',
+                }}>
+                {lots} {lots === 1 ? 'lot' : 'lots'}
+              </span>
               <span style={{ color: 'var(--text3)', fontFamily: 'var(--mono)', fontSize: 11 }}>₹{o.entry_price.toFixed(1)}</span>
               {/* FIX #3: Edit button (live mode with order_id only) */}
               {basket.mode === 'LIVE' && o.order_id && (
@@ -473,7 +487,7 @@ function BasketCard({ basket, index }) {
                 </button>
               )}
             </div>
-          ))}
+          )})}
         </div>
 
         <button
