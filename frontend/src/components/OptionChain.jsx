@@ -14,7 +14,7 @@ import toast from 'react-hot-toast'
 
 const API = import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
 const isMobile = () => window.innerWidth < 768
-const ATM_WINDOW = 15   // strikes each side via WS
+const ATM_WINDOW = 30   // strikes each side via WS
 const REST_INTERVAL = 4000  // ms between REST polls for OTM/ITM
 
 export default function OptionChain() {
