@@ -134,7 +134,37 @@ export default function OptionChain() {
   function refresh() {
     fetchChainLtps(selectedSymbol, selectedExpiry)
     fetchRestChain()
-    toast('Refreshing chain...', { icon: 'ROTATE', duration: 1500 })
+    toast('Refreshing chain...', { icon: '↻', duration: 1500 })
+  }
+
+  async function restartBackend() {
+    const ok = window.confirm('Restart the backend service on EC2?\n\nThe app will be unavailable for ~5 seconds.')
+    if (!ok) return
+
+    const toastId = toast.loading('Restarting backend…')
+    try {
+      const res = await fetch(`${API}/api/admin/restart`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || `HTTP ${res.status}`)
+      }
+      toast.success('Backend restarting… reconnecting in 6s', { id: toastId, duration: 4000 })
+      setTimeout(() => window.location.reload(), 6000)
+    } catch (err) {
+      // If the server killed itself before responding, fetch throws TypeError — that means it worked
+      if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
+        toast.success('Backend restarting… reconnecting in 6s', { id: toastId, duration: 4000 })
+        setTimeout(() => window.location.reload(), 6000)
+      } else {
+        toast.error(`Restart failed: ${err.message}`, { id: toastId })
+      }
+    }
   }
 
   const th = (align = 'right') => ({
@@ -191,6 +221,14 @@ export default function OptionChain() {
         <button onClick={refresh} className="btn btn-outline btn-sm"
           style={{ fontSize: 11, padding: '4px 8px', flexShrink: 0 }}>
           {chainLoading ? '⏳' : '↻'} Refresh
+        </button>
+
+        <button
+          onClick={restartBackend}
+          title="Restart backend service on EC2 (sudo systemctl restart basket-backend)"
+          className="btn btn-outline btn-sm"
+          style={{ fontSize: 11, padding: '4px 8px', flexShrink: 0, color: 'var(--red-txt)', borderColor: 'rgba(192,57,43,0.35)' }}>
+          ⚙ Restart
         </button>
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
