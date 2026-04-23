@@ -717,6 +717,7 @@ export const useStore = create((set, get) => ({
           expiry:      o.expiry,
           side:        o.side,
           quantity:    o.quantity,
+          lot_count:   o.lot_count ?? null,   // preserve lot count from DB
           entry_price: parseFloat(o.entry_price) || 0,
           trd_symbol:  o.trd_symbol || '',
           order_id:    o.order_id  || '',
