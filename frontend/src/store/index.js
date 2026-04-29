@@ -696,72 +696,9 @@ export const useStore = create((set, get) => ({
   })),
 
   fetchActiveBaskets: async () => {
-    const { token, activeBaskets, addActiveBasket, logout } = get()
-    if (!token) return
-    const API = import.meta.env.VITE_API_URL || 'https://api.baskettrading.in'
-    set({ basketsLoading: true, basketsLoadError: null })
-    try {
-      const res = await fetch(`${API}/api/baskets/active`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      // Token expired or invalid → log out so login screen appears
-      if (res.status === 401) {
-        console.warn('[STORE] Token expired — logging out')
-        logout()
-        return
-      }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const rows = await res.json()
-      // Full replace: set all DB baskets, don't just append
-      // This ensures a clean state on every page load
-      const dbBaskets = rows.map(row => ({
-        id:           row.id,
-        symbol:       row.orders?.[0]?.symbol || 'UNKNOWN',
-        orders:       (row.orders || []).map(o => ({
-          symbol:      o.symbol,
-          strike:      o.strike,
-          option_type: o.option_type,
-          expiry:      o.expiry,
-          side:        o.side,
-          quantity:    o.quantity,
-          lot_count:   o.lot_count ?? null,   // preserve lot count from DB
-          entry_price: parseFloat(o.entry_price) || 0,
-          trd_symbol:  o.trd_symbol || '',
-          order_id:    o.order_id  || '',
-        })),
-        lockedProfit: parseFloat(row.locked_profit) || 0,
-        lockedLoss:   parseFloat(row.locked_loss)   || 0,
-        autoLoop:     row.auto_loop ?? true,
-        pnl:          parseFloat(row.current_pnl)   || 0,
-        status:       'ACTIVE',
-        mode:         row.mode || 'PAPER',
-        loop:         row.loop_number || 1,
-        entryTime:    row.entry_time
-          ? new Date(row.entry_time).toLocaleTimeString('en-IN')
-          : '--:--',
-        _fromDB: true,
-      }))
-      // Merge: keep any in-memory baskets not yet in DB (just placed, not yet saved)
-      const dbIds = new Set(dbBaskets.map(b => b.id))
-      const memOnly = activeBaskets.filter(b => !b._fromDB && !dbIds.has(b.id))
-
-      // Restore optimistic baskets from localStorage that aren't in DB yet
-      // (user refreshed while backend was still processing)
-      const lsPending = (() => {
-        try { return JSON.parse(localStorage.getItem('optimistic_baskets') || '[]') } catch { return [] }
-      })()
-      // Only keep localStorage entries NOT already confirmed in DB
-      const lsOnly = lsPending.filter(b => !dbIds.has(b.id))
-
-      // Merge: DB baskets take priority, then in-memory only, then localStorage pending
-      const allBasketIds = new Set([...dbBaskets.map(b=>b.id), ...memOnly.map(b=>b.id)])
-      const lsNew = lsOnly.filter(b => !allBasketIds.has(b.id))
-
-      set({ activeBaskets: [...dbBaskets, ...memOnly, ...lsNew], basketsLoading: false })
-    } catch (err) {
-      console.warn('[STORE] fetchActiveBaskets error:', err)
-      set({ basketsLoading: false, basketsLoadError: err.message })
-    }
+    // No-op: baskets live in UI memory only — no database
+    // State is preserved as long as the page is open
+    set({ basketsLoading: false })
   },
 
   tradeHistory: [],
