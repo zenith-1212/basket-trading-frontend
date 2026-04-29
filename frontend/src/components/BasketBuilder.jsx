@@ -5,6 +5,21 @@ import toast from 'react-hot-toast'
 const isMobile = () => window.innerWidth < 768
 const API = () => import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
 
+// ── Optimistic basket persistence (survives page refresh before backend confirms) ──
+const LS_KEY = 'optimistic_baskets'
+function lsPendingBaskets() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]') } catch { return [] }
+}
+function lsSavePending(basket) {
+  const all = lsPendingBaskets().filter(b => b.id !== basket.id)
+  localStorage.setItem(LS_KEY, JSON.stringify([...all, basket]))
+}
+function lsRemovePending(id) {
+  const all = lsPendingBaskets().filter(b => b.id !== id)
+  localStorage.setItem(LS_KEY, JSON.stringify(all))
+}
+export function lsGetPendingBaskets() { return lsPendingBaskets() }
+
 // ── Lot stepper button style ──────────────────────────────────────────────────
 const lotBtnStyle = {
   width: 26, height: 26, borderRadius: 5,
@@ -132,6 +147,25 @@ export default function BasketBuilder() {
       setPlacing(true)
       toast.loading('Placing orders on Kotak Neo...', { id: 'exec' })
 
+      // ── OPTIMISTIC: save basket to localStorage immediately so refresh doesn't lose it ──
+      const optimisticBasket = {
+        id:      clientBasketId,
+        symbol:  selectedSymbol,
+        orders:  basket.map(o => ({
+          ...o,
+          lot_count:   o.lot_count ?? 1,
+          entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+          trd_symbol:  o.trd_symbol || '',
+        })),
+        lockedProfit, lockedLoss, autoLoop,
+        pnl: 0, status: 'ACTIVE', loop: 1,
+        entryTime: new Date().toLocaleTimeString('en-IN'),
+        mode: 'LIVE',
+        _pending: true,
+      }
+      lsSavePending(optimisticBasket)
+      addActiveBasket(optimisticBasket)
+
       try {
         // Step 1: Place orders with Kotak
         const kotakRes = await fetch(`${API()}/api/orders/place_basket`, {
@@ -226,6 +260,27 @@ export default function BasketBuilder() {
       // Paper mode
       setPlacing(true)
       toast.loading('Saving paper trade...', { id: 'exec' })
+
+      // ── OPTIMISTIC: add to UI + localStorage before backend responds ──
+      const optimisticPaperBasket = {
+        id:      clientBasketId,
+        symbol:  selectedSymbol,
+        orders:  basket.map(o => ({
+          ...o,
+          lot_count:   o.lot_count ?? 1,
+          entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+          trd_symbol:  o.trd_symbol || '',
+        })),
+        lockedProfit, lockedLoss, autoLoop,
+        pnl: 0, status: 'ACTIVE', loop: 1,
+        entryTime: new Date().toLocaleTimeString('en-IN'),
+        mode: 'PAPER',
+        _pending: true,
+      }
+      lsSavePending(optimisticPaperBasket)
+      addActiveBasket(optimisticPaperBasket)
+      clearBasket()
+
       try {
         const dbRes = await fetch(`${API()}/api/baskets/create`, {
           method:  'POST',
@@ -249,40 +304,15 @@ export default function BasketBuilder() {
         })
 
         const savedBasket = dbRes.ok ? await dbRes.json() : null
-
-        addActiveBasket({
-          id:      savedBasket?.id || clientBasketId,
-          symbol:  selectedSymbol,
-          orders:  savedBasket?.orders || basket.map(o => ({
-            ...o,
-            lot_count:   o.lot_count ?? 1,
-            entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
-            trd_symbol:  o.trd_symbol || '',
-          })),
-          lockedProfit, lockedLoss, autoLoop,
-          pnl: 0, status: 'ACTIVE', loop: 1,
-          entryTime: new Date().toLocaleTimeString('en-IN'),
-          mode: 'PAPER',
-        })
-        clearBasket()
+        lsRemovePending(clientBasketId)  // DB confirmed — remove optimistic copy
+        // If DB returned a real id, update the in-memory basket id
+        if (savedBasket?.id && savedBasket.id !== clientBasketId) {
+          useStore.getState().replaceBasketId(clientBasketId, savedBasket.id)
+        }
         toast.success('✅ Basket executed in PAPER mode', { id: 'exec' })
       } catch (err) {
-        addActiveBasket({
-          id:      clientBasketId,
-          symbol:  selectedSymbol,
-          orders:  basket.map(o => ({
-            ...o,
-            lot_count:   o.lot_count ?? 1,
-            entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
-            trd_symbol:  o.trd_symbol || '',
-          })),
-          lockedProfit, lockedLoss, autoLoop,
-          pnl: 0, status: 'ACTIVE', loop: 1,
-          entryTime: new Date().toLocaleTimeString('en-IN'),
-          mode: 'PAPER',
-        })
-        clearBasket()
-        toast('Paper trade added (DB save failed)', { id: 'exec' })
+        // Basket already added optimistically above — just notify
+        toast('Paper trade active (DB save failed — will retry on reload)', { id: 'exec' })
       } finally {
         setPlacing(false)
       }
