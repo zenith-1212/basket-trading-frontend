@@ -688,6 +688,13 @@ export const useStore = create((set, get) => ({
     activeBaskets: s.activeBaskets.filter(b => b.id !== id),
   })),
 
+  // Replace a temporary client-side id with the real DB id after save confirms
+  replaceBasketId: (oldId, newId) => set(s => ({
+    activeBaskets: s.activeBaskets.map(b =>
+      b.id === oldId ? { ...b, id: newId, _pending: false } : b
+    ),
+  })),
+
   fetchActiveBaskets: async () => {
     const { token, activeBaskets, addActiveBasket, logout } = get()
     if (!token) return
@@ -737,7 +744,20 @@ export const useStore = create((set, get) => ({
       // Merge: keep any in-memory baskets not yet in DB (just placed, not yet saved)
       const dbIds = new Set(dbBaskets.map(b => b.id))
       const memOnly = activeBaskets.filter(b => !b._fromDB && !dbIds.has(b.id))
-      set({ activeBaskets: [...dbBaskets, ...memOnly], basketsLoading: false })
+
+      // Restore optimistic baskets from localStorage that aren't in DB yet
+      // (user refreshed while backend was still processing)
+      const lsPending = (() => {
+        try { return JSON.parse(localStorage.getItem('optimistic_baskets') || '[]') } catch { return [] }
+      })()
+      // Only keep localStorage entries NOT already confirmed in DB
+      const lsOnly = lsPending.filter(b => !dbIds.has(b.id))
+
+      // Merge: DB baskets take priority, then in-memory only, then localStorage pending
+      const allBasketIds = new Set([...dbBaskets.map(b=>b.id), ...memOnly.map(b=>b.id)])
+      const lsNew = lsOnly.filter(b => !allBasketIds.has(b.id))
+
+      set({ activeBaskets: [...dbBaskets, ...memOnly, ...lsNew], basketsLoading: false })
     } catch (err) {
       console.warn('[STORE] fetchActiveBaskets error:', err)
       set({ basketsLoading: false, basketsLoadError: err.message })
