@@ -5,7 +5,7 @@ import { usePriceFeed } from './hooks/usePriceFeed'
 import {useBasketMonitor} from './hooks/useBasketMonitor'
 import Header from './components/Header'
 import OptionChain from './components/OptionChain'
-import BasketBuilder from './components/BasketBuilder'
+import BasketBuilder, { lsGetPendingBaskets } from './components/BasketBuilder'
 import ActiveBaskets from './components/ActiveBaskets'
 import LoginPage from './pages/LoginPage'
 import HistoryPage from './pages/HistoryPage'
@@ -102,7 +102,16 @@ function AppInner() {
 
   useEffect(() => {
     initChain()
-    fetchActiveBaskets()   // restore active trades from DB on every page load
+
+    // ── Optimistic restore: show any pending baskets from localStorage
+    //    IMMEDIATELY, before the DB fetch completes (prevents blank screen on refresh)
+    const pending = lsGetPendingBaskets()
+    if (pending.length > 0) {
+      const { addActiveBasket } = useStore.getState()
+      pending.forEach(b => addActiveBasket(b))
+    }
+
+    fetchActiveBaskets()   // restore active trades from DB (will merge/replace optimistic ones)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isMobile) {
