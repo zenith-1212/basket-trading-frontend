@@ -358,19 +358,7 @@ function BasketCard({ basket, index }) {
       }
     }
 
-    // Persist exit to DB then close in UI
-    try {
-      await fetch(`${API()}/api/baskets/${basket.id}/exit`, {
-        method:  'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ exit_pnl: pnl, exit_type: 'MANUAL', auto_loop: false }),
-      })
-    } catch (e) {
-      console.warn('[EXIT] Backend exit record failed (closing UI anyway):', e)
-    }
+    // No DB call — baskets are in-memory only
 
     closeBasket(basket.id)
     if (!isLive) adjustBalance(pnl)
