@@ -102,7 +102,7 @@ function AppInner() {
 
   useEffect(() => {
     initChain()
-    fetchActiveBaskets()   // no-op now — baskets are in-memory only
+    fetchActiveBaskets()   // restore active trades from DB on every page load
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isMobile) {
