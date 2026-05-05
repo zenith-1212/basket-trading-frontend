@@ -83,7 +83,10 @@ export default function BasketBuilder() {
   const [placing, setPlacing] = useState(false)
   const isEmpty    = basket.length === 0
   const isFull     = basket.length >= basketSize
-  const totalValue = basket.reduce((s, o) => s + o.entry_price * o.quantity, 0)
+  const totalValue = basket.reduce((s, o) => {
+    const val = o.entry_price * o.quantity
+    return o.side === 'BUY' ? s + val : s - val
+  }, 0)
   const mobile     = isMobile()
 
   // ── Build order payload — always include lot_count + final quantity ──────
@@ -391,9 +394,11 @@ export default function BasketBuilder() {
       {/* ── Total ── */}
       {!isEmpty && (
         <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', flexShrink: 0, background: 'var(--bg-panel)' }}>
-          <span style={{ fontSize: 11, color: 'var(--text3)' }}>Total Premium</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--mono)' }}>
-            ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+          <span style={{ fontSize: 11, color: 'var(--text3)' }}>
+            Net Premium {totalValue < 0 ? '(Credit)' : '(Debit)'}
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'var(--mono)', color: totalValue < 0 ? 'var(--green-txt)' : 'var(--red-txt)' }}>
+            {totalValue < 0 ? '+' : '-'}₹{Math.abs(totalValue).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
           </span>
         </div>
       )}
