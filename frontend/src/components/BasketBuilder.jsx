@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useStore, LOT_SIZES, MAX_LOTS } from '../store'
 import toast from 'react-hot-toast'
 
@@ -81,10 +81,58 @@ export default function BasketBuilder() {
   } = useStore()
 
   const [placing, setPlacing] = useState(false)
+  const [marginRequired, setMarginRequired] = useState(null)  // null = not fetched yet
+  const [marginLoading, setMarginLoading]   = useState(false)
+  const marginTimerRef = useRef(null)
+
   const isEmpty    = basket.length === 0
   const isFull     = basket.length >= basketSize
   const totalValue = basket.reduce((s, o) => s + o.entry_price * o.quantity, 0)
+  const hasSell    = basket.some(o => o.side === 'SELL')
   const mobile     = isMobile()
+
+  // ── Fetch margin required from backend whenever basket changes ───────────
+  useEffect(() => {
+    if (marginTimerRef.current) clearTimeout(marginTimerRef.current)
+    if (isEmpty) { setMarginRequired(null); return }
+
+    // Debounce 400ms so rapid lot changes don't spam the API
+    marginTimerRef.current = setTimeout(async () => {
+      setMarginLoading(true)
+      try {
+        const orders = basket.map(o => ({
+          symbol:      o.symbol,
+          strike:      o.strike,
+          option_type: o.option_type,
+          expiry:      o.expiry,
+          side:        o.side,
+          quantity:    o.quantity,
+          lot_count:   o.lot_count ?? 1,
+          trd_symbol:  o.trd_symbol || '',
+        }))
+        const res = await fetch(`${API()}/api/orders/margin`, {
+          method:  'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ orders }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setMarginRequired(data.required ?? data.margin_required ?? null)
+        } else {
+          setMarginRequired(null)
+        }
+      } catch {
+        setMarginRequired(null)
+      } finally {
+        setMarginLoading(false)
+      }
+    }, 400)
+
+    return () => { if (marginTimerRef.current) clearTimeout(marginTimerRef.current) }
+  }, [basket, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Build order payload — always include lot_count + final quantity ──────
   function buildOrderPayload(o, overrides = {}) {
@@ -390,11 +438,30 @@ export default function BasketBuilder() {
 
       {/* ── Total ── */}
       {!isEmpty && (
-        <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', flexShrink: 0, background: 'var(--bg-panel)' }}>
-          <span style={{ fontSize: 11, color: 'var(--text3)' }}>Total Premium</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--mono)' }}>
-            ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-          </span>
+        <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-panel)' }}>
+          {/* Premium row — always shown */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: hasSell ? 4 : 0 }}>
+            <span style={{ fontSize: 11, color: 'var(--text3)' }}>Total Premium</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--mono)' }}>
+              ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+            </span>
+          </div>
+          {/* Margin required row — only when basket has SELL orders */}
+          {hasSell && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: 'var(--text3)' }}>
+                Margin Required
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'var(--mono)',
+                color: marginRequired != null ? 'var(--red-txt)' : 'var(--text3)' }}>
+                {marginLoading
+                  ? '⏳ ...'
+                  : marginRequired != null
+                    ? `₹${marginRequired.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+                    : '—'}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
