@@ -147,7 +147,7 @@ export default function Header() {
           {/* Balance — paper or live */}
           <div style={{ padding: '6px 14px', flexShrink: 0, marginLeft: 'auto' }}>
             <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>
-              {isLive ? 'FLATTRADE' : 'PAPER BAL'}
+              {isLive ? 'FLATTRADE BAL' : 'PAPER BAL'}
             </div>
             <div style={{ fontSize: 13, fontWeight: 700, fontFamily: 'var(--mono)',
               color: isLive ? '#4ade80' : '#fbbf24' }}>
@@ -229,7 +229,7 @@ export default function Header() {
           </button>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>
-              {isLive ? 'KOTAK BAL' : 'PAPER'}
+              {isLive ? 'FLATTRADE BAL' : 'PAPER'}
             </div>
             <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'var(--mono)',
               color: isLive ? '#4ade80' : '#fbbf24' }}>
