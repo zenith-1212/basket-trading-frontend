@@ -5,7 +5,6 @@ import toast from 'react-hot-toast'
 const isMobile = () => window.innerWidth < 768
 const API = () => import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
 
-// ── Lot stepper button style ──────────────────────────────────────────────────
 const lotBtnStyle = {
   width: 26, height: 26, borderRadius: 5,
   border: '1px solid var(--border)',
@@ -17,15 +16,13 @@ const lotBtnStyle = {
   WebkitTapHighlightColor: 'transparent',
 }
 
-// ── Per-order LOT counter component ──────────────────────────────────────────
 function LotStepper({ order, index }) {
   const { updateLotCount } = useStore()
-  const lotSize   = LOT_SIZES[order.symbol] || 75
-  const lotCount  = order.lot_count ?? 1
-  const canDec    = lotCount > 1
-  const canInc    = lotCount < MAX_LOTS
+  const lotSize  = LOT_SIZES[order.symbol] || 75
+  const lotCount = order.lot_count ?? 1
+  const canDec   = lotCount > 1
+  const canInc   = lotCount < MAX_LOTS
 
-  // Debounce rapid taps: track last update per index
   const handleChange = useCallback((delta) => {
     updateLotCount(index, delta)
   }, [index, updateLotCount])
@@ -33,36 +30,22 @@ function LotStepper({ order, index }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 6 }}>
       <span style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 600, minWidth: 24 }}>LOT</span>
-
-      {/* Decrement */}
       <button
         style={{ ...lotBtnStyle, color: canDec ? 'var(--red-txt)' : 'var(--border2)', borderColor: canDec ? 'var(--border)' : 'var(--border2)' }}
         onClick={() => canDec && handleChange(-1)}
         aria-label="Remove 1 lot"
       >−</button>
-
-      {/* Count display */}
-      <span style={{
-        minWidth: 28, textAlign: 'center',
-        fontSize: 13, fontWeight: 700,
-        color: 'var(--blue)', fontFamily: 'var(--mono)',
-      }}>
+      <span style={{ minWidth: 28, textAlign: 'center', fontSize: 13, fontWeight: 700, color: 'var(--blue)', fontFamily: 'var(--mono)' }}>
         {lotCount}
       </span>
-
-      {/* Increment */}
       <button
         style={{ ...lotBtnStyle, color: canInc ? 'var(--green-txt)' : 'var(--border2)', borderColor: canInc ? 'var(--border)' : 'var(--border2)' }}
         onClick={() => canInc && handleChange(+1)}
         aria-label="Add 1 lot"
       >+</button>
-
-      {/* Qty label */}
       <span style={{ fontSize: 10, color: 'var(--text3)', fontFamily: 'var(--mono)', marginLeft: 2 }}>
         = {order.quantity} qty
       </span>
-
-      {/* Max warning */}
       {lotCount >= MAX_LOTS && (
         <span style={{ fontSize: 9, color: 'var(--red-txt)', fontWeight: 600 }}>MAX</span>
       )}
@@ -70,7 +53,6 @@ function LotStepper({ order, index }) {
   )
 }
 
-// ── Main BasketBuilder ────────────────────────────────────────────────────────
 export default function BasketBuilder() {
   const {
     basket, basketSize, setBasketSize, removeFromBasket, clearBasket,
@@ -80,23 +62,27 @@ export default function BasketBuilder() {
     basketPrices,
   } = useStore()
 
-  const [placing, setPlacing] = useState(false)
-  const [marginRequired, setMarginRequired] = useState(null)  // null = not fetched yet
+  const [placing, setPlacing]           = useState(false)
+  const [marginRequired, setMarginRequired] = useState(null)
   const [marginLoading, setMarginLoading]   = useState(false)
   const marginTimerRef = useRef(null)
 
-  const isEmpty    = basket.length === 0
-  const isFull     = basket.length >= basketSize
-  const totalValue = basket.reduce((s, o) => s + o.entry_price * o.quantity, 0)
-  const hasSell    = basket.some(o => o.side === 'SELL')
-  const mobile     = isMobile()
+  const isEmpty = basket.length === 0
+  const isFull  = basket.length >= basketSize
+  const hasSell = basket.some(o => o.side === 'SELL')
+  const mobile  = isMobile()
 
-  // ── Fetch margin required from backend whenever basket changes ───────────
+  // Live total — always reads freshest tick price
+  const totalValue = basket.reduce((s, o) => {
+    const livePrice = basketPrices[o.trd_symbol] || o.entry_price || 0
+    return s + livePrice * o.quantity
+  }, 0)
+
+  // ── Margin fetch ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (marginTimerRef.current) clearTimeout(marginTimerRef.current)
     if (isEmpty) { setMarginRequired(null); return }
 
-    // Debounce 400ms so rapid lot changes don't spam the API
     marginTimerRef.current = setTimeout(async () => {
       setMarginLoading(true)
       try {
@@ -109,6 +95,8 @@ export default function BasketBuilder() {
           quantity:    o.quantity,
           lot_count:   o.lot_count ?? 1,
           trd_symbol:  o.trd_symbol || '',
+          ltp:         basketPrices[o.trd_symbol] || o.entry_price || 0,
+          spot_price:  0,
         }))
         const res = await fetch(`${API()}/api/orders/margin`, {
           method:  'POST',
@@ -134,19 +122,19 @@ export default function BasketBuilder() {
     return () => { if (marginTimerRef.current) clearTimeout(marginTimerRef.current) }
   }, [basket, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Build order payload — always include lot_count + final quantity ──────
+  // ── Order payload builder ──────────────────────────────────────────────────
   function buildOrderPayload(o, overrides = {}) {
-    const lotSize    = LOT_SIZES[o.symbol] || 75
-    const lot_count  = o.lot_count ?? 1
-    const quantity   = lot_count * lotSize
+    const lotSize   = LOT_SIZES[o.symbol] || 75
+    const lot_count = o.lot_count ?? 1
+    const quantity  = lot_count * lotSize
     return {
       symbol:      o.symbol,
       strike:      o.strike,
       option_type: o.option_type,
       expiry:      o.expiry,
       side:        o.side,
-      lot_count,          // ← NEW: backend uses this for validation/logging
-      quantity,           // ← derived: lot_count × lot_size
+      lot_count,
+      quantity,
       lot_size:    lotSize,
       order_type:  'MKT',
       product:     'MIS',
@@ -155,12 +143,12 @@ export default function BasketBuilder() {
     }
   }
 
+  // ── Execute ────────────────────────────────────────────────────────────────
   async function execute() {
     if (isEmpty)           { toast.error('Add orders to basket first'); return }
     if (lockedProfit <= 0) { toast.error('Set target profit > 0');      return }
     if (lockedLoss   <= 0) { toast.error('Set stop loss > 0');           return }
 
-    // Validate all lots > 0 (guard against corrupt state)
     const badLot = basket.find(o => (o.lot_count ?? 1) < 1)
     if (badLot) { toast.error('All orders must have at least 1 lot'); return }
 
@@ -181,7 +169,7 @@ export default function BasketBuilder() {
       toast.loading('Placing orders on Kotak Neo...', { id: 'exec' })
 
       try {
-        // Step 1: Place orders with Kotak
+        // Always use freshest tick price at moment of execution
         const kotakRes = await fetch(`${API()}/api/orders/place_basket`, {
           method:  'POST',
           headers: {
@@ -213,7 +201,6 @@ export default function BasketBuilder() {
           toast.success(`✅ ${kotakData.placed} order(s) placed on Kotak Neo!`, { id: 'exec' })
         }
 
-        // Step 2: Persist basket to DB (idempotent via client_basket_id)
         toast.loading('Saving trade to DB...', { id: 'exec' })
         const dbRes = await fetch(`${API()}/api/baskets/create`, {
           method:  'POST',
@@ -375,7 +362,6 @@ export default function BasketBuilder() {
             }}>↻ Load Balance</button>
           )}
         </div>
-        {/* Basket SIZE stepper */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 10, color: 'var(--text3)', marginRight: 2 }}>SIZE</span>
           <button
@@ -402,36 +388,42 @@ export default function BasketBuilder() {
           </div>
         ) : (
           <div style={{ padding: mobile ? 0 : '6px' }}>
-            {basket.map((order, i) => (
-              <div key={order.id} className="anim-in" style={{
-                marginBottom: 5, padding: '10px 12px', borderRadius: 8,
-                background: 'var(--bg-panel)', border: '1px solid var(--border)',
-              }}>
-                {/* Top row: badge + symbol + remove */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
-                  <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
-                    <span className={`badge ${order.side === 'BUY' ? 'badge-green' : 'badge-red'}`}>{order.side}</span>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
-                      {order.symbol} {order.strike} {order.option_type}
-                    </span>
+            {basket.map((order, i) => {
+              // Always show the freshest available price
+              const livePrice = basketPrices[order.trd_symbol] || order.entry_price || 0
+              return (
+                <div key={order.id} className="anim-in" style={{
+                  marginBottom: 5, padding: '10px 12px', borderRadius: 8,
+                  background: 'var(--bg-panel)', border: '1px solid var(--border)',
+                }}>
+                  {/* Top row: badge + symbol + remove */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
+                    <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+                      <span className={`badge ${order.side === 'BUY' ? 'badge-green' : 'badge-red'}`}>{order.side}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+                        {order.symbol} {order.strike} {order.option_type}
+                      </span>
+                    </div>
+                    <button onClick={() => removeFromBasket(i)} style={{
+                      background: 'none', border: 'none', color: 'var(--text3)',
+                      cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '2px 6px',
+                      touchAction: 'manipulation',
+                    }}>×</button>
                   </div>
-                  <button onClick={() => removeFromBasket(i)} style={{
-                    background: 'none', border: 'none', color: 'var(--text3)',
-                    cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '2px 6px',
-                    touchAction: 'manipulation',
-                  }}>×</button>
-                </div>
 
-                {/* Price + expiry */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text2)', marginBottom: 2 }}>
-                  <span style={{ fontFamily: 'var(--mono)' }}>₹{order.entry_price.toFixed(1)}</span>
-                  <span style={{ color: 'var(--text3)' }}>{order.expiry}</span>
-                </div>
+                  {/* Live price + expiry */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text2)', marginBottom: 2 }}>
+                    <span style={{ fontFamily: 'var(--mono)', fontWeight: 600 }}>
+                      ₹{livePrice.toFixed(2)}
+                    </span>
+                    <span style={{ color: 'var(--text3)' }}>{order.expiry}</span>
+                  </div>
 
-                {/* ── LOT STEPPER ── */}
-                <LotStepper order={order} index={i} />
-              </div>
-            ))}
+                  {/* LOT STEPPER */}
+                  <LotStepper order={order} index={i} />
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
@@ -439,19 +431,15 @@ export default function BasketBuilder() {
       {/* ── Total ── */}
       {!isEmpty && (
         <div style={{ padding: '6px 12px', borderTop: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-panel)' }}>
-          {/* Premium row — always shown */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: hasSell ? 4 : 0 }}>
             <span style={{ fontSize: 11, color: 'var(--text3)' }}>Total Premium</span>
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--mono)' }}>
               ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
             </span>
           </div>
-          {/* Margin required row — only when basket has SELL orders */}
           {hasSell && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'var(--text3)' }}>
-                Margin Required
-              </span>
+              <span style={{ fontSize: 11, color: 'var(--text3)' }}>Margin Required</span>
               <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'var(--mono)',
                 color: marginRequired != null ? 'var(--red-txt)' : 'var(--text3)' }}>
                 {marginLoading
