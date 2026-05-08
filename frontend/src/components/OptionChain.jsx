@@ -1,12 +1,5 @@
 /**
  * OptionChain.jsx — Full chain with hybrid WS + REST pricing
- *
- * ARCHITECTURE:
- *   - Full chain: ALL strikes shown (from scrip master full list)
- *   - ATM window (±15 strikes): priced live via WebSocket ticks
- *   - Outside window: priced via REST poll every 4s (no WS tokens wasted)
- *   - Auto-scroll to ATM row on load + symbol/expiry change
- *   - Dhan WS limit stays safe: only ~62 tokens per expiry via WS
  */
 import { useStore, LOT_SIZES, STRIKE_GAP } from '../store'
 import { useEffect, useRef, useCallback } from 'react'
@@ -14,8 +7,8 @@ import toast from 'react-hot-toast'
 
 const API = import.meta.env.VITE_API_URL || 'https://basket-trading-backend.onrender.com'
 const isMobile = () => window.innerWidth < 768
-const ATM_WINDOW = 30   // strikes each side via WS
-const REST_INTERVAL = 4000  // ms between REST polls for OTM/ITM
+const ATM_WINDOW = 30
+const REST_INTERVAL = 4000
 
 export default function OptionChain() {
   const {
@@ -35,10 +28,8 @@ export default function OptionChain() {
   const restTimerRef = useRef(null)
   const prevKeyRef   = useRef('')
 
-  // Nearest ATM strike
   const atmStrike = spot > 0 ? Math.round(spot / gap) * gap : 0
 
-  // ── Auto-scroll to ATM ─────────────────────────────────────────────────────
   const scrollToAtm = useCallback(() => {
     if (atmRowRef.current && tableWrapRef.current) {
       const wrap = tableWrapRef.current
@@ -55,13 +46,11 @@ export default function OptionChain() {
     }
   }, [selectedSymbol, selectedExpiry, rows.length, scrollToAtm])
 
-  // Scroll when spot first arrives and ATM row is now renderable
   const atmKey = atmStrike
   useEffect(() => {
     if (atmStrike > 0) setTimeout(scrollToAtm, 80)
   }, [atmKey]) // eslint-disable-line
 
-  // ── REST poll for full chain (out-of-window strikes get prices here) ────────
   const fetchRestChain = useCallback(async () => {
     if (!selectedSymbol || !selectedExpiry) return
     const MON = {Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',
@@ -81,7 +70,7 @@ export default function OptionChain() {
       if (Object.keys(chainData).length === 0) return
       applyChainSnapshot(selectedSymbol, selectedExpiry, chainData, ymd)
     } catch { /* silent */ }
-  }, [selectedSymbol, selectedExpiry, applyChainSnapshot])
+  }, [selectedSymbol, selectedExpiry, applyChainSnapshot, token])
 
   useEffect(() => {
     fetchRestChain()
@@ -89,12 +78,6 @@ export default function OptionChain() {
     return () => { if (restTimerRef.current) clearInterval(restTimerRef.current) }
   }, [selectedSymbol, selectedExpiry]) // eslint-disable-line
 
-  // ── FIX v5.3: Fetch REAL expiry list from backend on mount + symbol change ──
-  // The frontend's getExpiries() generates Mon-Fri days as placeholders.
-  // The backend knows the ACTUAL expiry dates from Kotak scrip master.
-  // We query /api/prices/expiries/{symbol} to get the real list, then call
-  // setExpiriesFromBackend() which replaces placeholder dates with real ones
-  // and auto-selects the nearest correct expiry.
   const fetchRealExpiries = useCallback(async () => {
     if (!selectedSymbol) return
     try {
@@ -105,7 +88,6 @@ export default function OptionChain() {
       const expiries = body.expiries || []
       if (expiries.length > 0) {
         setExpiriesFromBackend(selectedSymbol, expiries)
-        console.log(`[EXPIRY] Got real expiries for ${selectedSymbol}:`, expiries)
       }
     } catch (e) {
       console.warn('[EXPIRY] Could not fetch real expiries:', e)
@@ -116,7 +98,6 @@ export default function OptionChain() {
     fetchRealExpiries()
   }, [selectedSymbol]) // eslint-disable-line
 
-  // ── Add to basket ──────────────────────────────────────────────────────────
   function add(row, optType, side) {
     if (isFull) { toast.error(`Basket full — max ${basketSize} orders`); return }
     const ltp        = optType === 'CE' ? row.ce_ltp : row.pe_ltp
@@ -140,7 +121,6 @@ export default function OptionChain() {
   async function restartBackend() {
     const ok = window.confirm('Restart the backend service on EC2?\n\nThe app will be unavailable for ~5 seconds.')
     if (!ok) return
-
     const toastId = toast.loading('Restarting backend…')
     try {
       const res = await fetch(`${API}/api/admin/restart`, {
@@ -157,7 +137,6 @@ export default function OptionChain() {
       toast.success('Backend restarting… reconnecting in 6s', { id: toastId, duration: 4000 })
       setTimeout(() => window.location.reload(), 6000)
     } catch (err) {
-      // If the server killed itself before responding, fetch throws TypeError — that means it worked
       if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
         toast.success('Backend restarting… reconnecting in 6s', { id: toastId, duration: 4000 })
         setTimeout(() => window.location.reload(), 6000)
@@ -225,7 +204,7 @@ export default function OptionChain() {
 
         <button
           onClick={restartBackend}
-          title="Restart backend service on EC2 (sudo systemctl restart basket-backend)"
+          title="Restart backend service on EC2"
           className="btn btn-outline btn-sm"
           style={{ fontSize: 11, padding: '4px 8px', flexShrink: 0, color: 'var(--red-txt)', borderColor: 'rgba(192,57,43,0.35)' }}>
           ⚙ Restart
@@ -233,7 +212,7 @@ export default function OptionChain() {
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: mobile ? 18 : 20, fontWeight: 700, color: 'var(--text)', fontFamily: 'var(--mono)' }}>
-            {spot > 0 ? `₹${spot.toLocaleString('en-IN', { maximumFractionDigits: 1 })}` : '—'}
+            {spot > 0 ? `₹${spot.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
           </span>
           {chainLoading && <span style={{ fontSize: 10, color: 'var(--blue)' }}>Loading...</span>}
         </div>
@@ -253,12 +232,12 @@ export default function OptionChain() {
           </thead>
           <tbody>
             {rows.map(row => {
-              const isAtm       = atmStrike > 0 && row.strike === atmStrike
-              const itmCE       = spot > 0 && row.strike < spot
-              const itmPE       = spot > 0 && row.strike > spot
-              const rowBg       = isAtm ? 'var(--bg-atm)' : (itmCE || itmPE) ? 'var(--bg-panel)' : 'var(--bg-white)'
-              const strikeDist  = atmStrike > 0 ? Math.abs(row.strike - atmStrike) / gap : 999
-              const inWsWindow  = strikeDist <= ATM_WINDOW
+              const isAtm      = atmStrike > 0 && row.strike === atmStrike
+              const itmCE      = spot > 0 && row.strike < spot
+              const itmPE      = spot > 0 && row.strike > spot
+              const rowBg      = isAtm ? 'var(--bg-atm)' : (itmCE || itmPE) ? 'var(--bg-panel)' : 'var(--bg-white)'
+              const strikeDist = atmStrike > 0 ? Math.abs(row.strike - atmStrike) / gap : 999
+              const inWsWindow = strikeDist <= ATM_WINDOW
 
               return (
                 <tr
@@ -287,7 +266,7 @@ export default function OptionChain() {
                   }}>
                     {row.ce_ltp > 0 ? (
                       <span>
-                        {row.ce_ltp.toFixed(1)}
+                        {row.ce_ltp.toFixed(2)}
                         {inWsWindow && (
                           <span style={{ marginLeft: 3, fontSize: 7, color: 'var(--green)', verticalAlign: 'super' }}>●</span>
                         )}
@@ -326,7 +305,7 @@ export default function OptionChain() {
                   }}>
                     {row.pe_ltp > 0 ? (
                       <span>
-                        {row.pe_ltp.toFixed(1)}
+                        {row.pe_ltp.toFixed(2)}
                         {inWsWindow && (
                           <span style={{ marginLeft: 3, fontSize: 7, color: 'var(--green)', verticalAlign: 'super' }}>●</span>
                         )}
