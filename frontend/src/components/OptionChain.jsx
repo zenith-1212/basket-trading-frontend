@@ -72,32 +72,12 @@ export default function OptionChain() {
     } catch { /* silent */ }
   }, [selectedSymbol, selectedExpiry, applyChainSnapshot, token])
 
-  // Market hours check (IST)
-  function isMarketHours() {
-    const now = new Date()
-    if (now.getDay() === 0 || now.getDay() === 6) return false
-    const ist  = new Date(now.getTime() + 5.5 * 3600 * 1000)
-    const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes()
-    return mins >= 540 && mins <= 935
-  }
-
-  // REST poll:
-  //  - Market OPEN + WS connected → no poll needed (all ticks via WS)
-  //  - Market OPEN + WS down → poll every 4s as fallback
-  //  - Market CLOSED → fetch once to show last closing prices, then stop
+  // REST poll only runs when WebSocket is down.
+  // When WS is connected all 482 tokens stream live — REST poll is redundant
+  // and causes price flickering from stale chain endpoint responses.
   useEffect(() => {
     if (restTimerRef.current) clearInterval(restTimerRef.current)
-    if (!selectedSymbol || !selectedExpiry) return
-
-    if (!isMarketHours()) {
-      // Fetch closing prices once — no repeat polling needed
-      fetchRestChain()
-      return
-    }
-
-    if (wsConnected) return   // Market open + WS live — no REST poll needed
-
-    // Market open + WS down — poll as fallback
+    if (wsConnected) return   // WS live — no REST poll needed
     fetchRestChain()
     restTimerRef.current = setInterval(fetchRestChain, REST_INTERVAL)
     return () => { if (restTimerRef.current) clearInterval(restTimerRef.current) }
