@@ -91,11 +91,10 @@ export default function OptionChain() {
 
     // Either WS down OR market closed/weekend → fetch via REST
     // During market hours with WS down: poll every 4s as fallback
-    // Outside market hours: fetch once to show closing prices, no repeat
+    // Outside market hours: fetch once every 60s (matches backend cache TTL)
     fetchRestChain()
-    if (isMarketHours()) {
-      restTimerRef.current = setInterval(fetchRestChain, REST_INTERVAL)
-    }
+    const interval = isMarketHours() ? REST_INTERVAL : 60_000
+    restTimerRef.current = setInterval(fetchRestChain, interval)
     return () => { if (restTimerRef.current) clearInterval(restTimerRef.current) }
   }, [selectedSymbol, selectedExpiry, wsConnected]) // eslint-disable-line
 
