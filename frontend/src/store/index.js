@@ -371,14 +371,29 @@ export const useStore = create((set, get) => ({
   applyChainSnapshot: (symbol, expiry, chainData, expiry_ymd) => {
     if (!symbol || !expiry || !chainData) return
 
+    // Key by trd_symbol to avoid strike collision between weekly and monthly contracts
+    // e.g. NIFTY2651223000CE (12-May) and NIFTY26MAY23000CE (28-May) both have strike=23000
+    // Using strike as key would cause one to overwrite the other.
     const ltpMap = {}
     for (const [trd, ltp] of Object.entries(chainData)) {
       const parsed = parseTrdSymbol(trd)
       if (!parsed || !ltp || ltp <= 0) continue
       const { strike, ot } = parsed
       if (!ltpMap[strike]) ltpMap[strike] = {}
-      if (ot === 'CE') { ltpMap[strike].ce = ltp; ltpMap[strike].ce_token = trd }
-      else             { ltpMap[strike].pe = ltp; ltpMap[strike].pe_token = trd }
+      // Only overwrite if this trd matches the expiry we are rendering
+      // Weekly tokens (e.g. 2651222900) take priority over monthly (26MAY22900)
+      const isWeekly = !trd.match(/\d{2}[A-Za-z]{3}\d+$/)
+      const existingIsWeekly = ltpMap[strike][ot === 'CE' ? 'ce_weekly' : 'pe_weekly']
+      if (existingIsWeekly && !isWeekly) continue  // keep weekly, skip monthly
+      if (ot === 'CE') {
+        ltpMap[strike].ce = ltp
+        ltpMap[strike].ce_token = trd
+        ltpMap[strike].ce_weekly = isWeekly
+      } else {
+        ltpMap[strike].pe = ltp
+        ltpMap[strike].pe_token = trd
+        ltpMap[strike].pe_weekly = isWeekly
+      }
     }
 
     if (Object.keys(ltpMap).length === 0) {
