@@ -433,8 +433,8 @@ export const useStore = create((set, get) => ({
         const e = ltpMap[strike] || {}
         return {
           strike,
-          ce_ltp:   e.ce  > 0 ? parseFloat(e.ce.toFixed(1))  : (existing?.ce_ltp  || 0),
-          pe_ltp:   e.pe  > 0 ? parseFloat(e.pe.toFixed(1))  : (existing?.pe_ltp  || 0),
+          ce_ltp:   e.ce  > 0 ? parseFloat(e.ce.toFixed(2))  : (existing?.ce_ltp  || 0),
+          pe_ltp:   e.pe  > 0 ? parseFloat(e.pe.toFixed(2))  : (existing?.pe_ltp  || 0),
           ce_prev:  existing?.ce_prev || 0,
           pe_prev:  existing?.pe_prev || 0,
           ce_token: e.ce_token || existing?.ce_token || null,
