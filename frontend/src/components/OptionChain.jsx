@@ -14,7 +14,7 @@ export default function OptionChain() {
   const {
     selectedSymbol, selectedExpiry, chain, spotPrices, chainLoading,
     basket, basketSize, setSymbol, setExpiry, addToBasket, fetchChainLtps,
-    applyChainSnapshot, setExpiriesFromBackend, token,
+    applyChainSnapshot, setExpiriesFromBackend, token, wsConnected,
   } = useStore()
 
   const spot    = spotPrices[selectedSymbol] || 0
@@ -72,11 +72,16 @@ export default function OptionChain() {
     } catch { /* silent */ }
   }, [selectedSymbol, selectedExpiry, applyChainSnapshot, token])
 
+  // REST poll only runs when WebSocket is down.
+  // When WS is connected all 482 tokens stream live — REST poll is redundant
+  // and causes price flickering from stale chain endpoint responses.
   useEffect(() => {
+    if (restTimerRef.current) clearInterval(restTimerRef.current)
+    if (wsConnected) return   // WS live — no REST poll needed
     fetchRestChain()
     restTimerRef.current = setInterval(fetchRestChain, REST_INTERVAL)
     return () => { if (restTimerRef.current) clearInterval(restTimerRef.current) }
-  }, [selectedSymbol, selectedExpiry]) // eslint-disable-line
+  }, [selectedSymbol, selectedExpiry, wsConnected]) // eslint-disable-line
 
   const fetchRealExpiries = useCallback(async () => {
     if (!selectedSymbol) return
