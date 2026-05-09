@@ -36,20 +36,18 @@ export default function Header() {
   })()
 
   async function refreshToken() {
-    const s = JSON.parse(localStorage.getItem('dhan_config') || '{}')
-    if (!s.client_id || !s.pin || !s.totp_secret) {
-      toast.error('Save Dhan credentials in Settings first'); return
-    }
     setTokStatus('loading')
-    toast.loading('Fetching token...', { id: 'tok' })
+    toast.loading('Refreshing Kotak session...', { id: 'tok' })
     try {
-      const res  = await fetch(`${API}/api/token/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_id: s.client_id, pin: s.pin, totp_secret: s.totp_secret }),
+      const token = useStore.getState().token
+      const res = await fetch(`${API}/api/orders/refresh_session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Failed')
-      toast.success('Token refreshed!', { id: 'tok' })
+      toast.success(`✓ Kotak session refreshed (IP: ${data.server_ip || 'ok'})`, { id: 'tok' })
       setTokStatus('done')
     } catch (e) {
       toast.error(e.message, { id: 'tok' })
@@ -147,7 +145,7 @@ export default function Header() {
           {/* Balance — paper or live */}
           <div style={{ padding: '6px 14px', flexShrink: 0, marginLeft: 'auto' }}>
             <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>
-              {isLive ? 'FLATTRADE BAL' : 'PAPER BAL'}
+              {isLive ? 'KOTAK BAL' : 'PAPER BAL'}
             </div>
             <div style={{ fontSize: 13, fontWeight: 700, fontFamily: 'var(--mono)',
               color: isLive ? '#4ade80' : '#fbbf24' }}>
@@ -176,7 +174,7 @@ export default function Header() {
           }}>B</div>
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>Basket Loop Trader</div>
-            <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.08em' }}>DHAN DATA · KOTAK NEO · HYBRID</div>
+            <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.08em' }}>KOTAK NEO · LIVE FEED</div>
           </div>
         </div>
 
@@ -225,11 +223,11 @@ export default function Header() {
             color: tokStatus === 'done' ? '#4ade80' : tokStatus === 'error' ? '#f87171' : 'rgba(255,255,255,0.6)',
             fontSize: 10, cursor: 'pointer', fontFamily: 'var(--sans)',
           }}>
-            {tokStatus === 'loading' ? '⏳ Refreshing...' : tokStatus === 'done' ? '✓ Token OK' : tokStatus === 'error' ? '✗ Failed' : '🔑 Refresh Token'}
+            {tokStatus === 'loading' ? '⏳ Refreshing...' : tokStatus === 'done' ? '✓ Session OK' : tokStatus === 'error' ? '✗ Failed' : '🔑 Refresh Session'}
           </button>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>
-              {isLive ? 'FLATTRADE BAL' : 'PAPER'}
+              {isLive ? 'KOTAK BAL' : 'PAPER'}
             </div>
             <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'var(--mono)',
               color: isLive ? '#4ade80' : '#fbbf24' }}>
