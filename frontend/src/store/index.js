@@ -150,14 +150,27 @@ export function getExpiries(symbol = 'NIFTY', count = 20) {
 
 // ── Black-Scholes approximation for placeholder prices ────────────────────────
 
+function _isMarketHours() {
+  const now = new Date()
+  const day = now.getDay()
+  if (day === 0 || day === 6) return false
+  // Convert to IST (UTC+5:30)
+  const ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000))
+  const h = ist.getUTCHours(), m = ist.getUTCMinutes()
+  const mins = h * 60 + m
+  return mins >= 540 && mins <= 935  // 9:00 to 15:35 IST
+}
+
 function bs_approx(spot, strike, daysToExpiry, isCall) {
+  // Outside market hours return 0 — real prices come from Kotak REST /ltp
+  if (!_isMarketHours()) return 0
   const t          = Math.max(daysToExpiry, 1) / 365
   const iv         = 0.16
   const diff       = spot - strike
   const intrinsic  = isCall ? Math.max(0, diff) : Math.max(0, -diff)
   const timeVal    = spot * iv * Math.sqrt(t) * 0.4
   const distFactor = Math.exp(-Math.abs(diff) / (spot * iv * Math.sqrt(t) * 2 + 1))
-  return parseFloat(Math.max(0.1, intrinsic + timeVal * distFactor).toFixed(1))
+  return parseFloat(Math.max(0.1, intrinsic + timeVal * distFactor).toFixed(2))
 }
 
 export function generateChain(symbol, spot, depth = 40) {
