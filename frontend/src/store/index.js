@@ -443,13 +443,28 @@ export const useStore = create((set, get) => ({
 
       const spot2 = s.spotPrices[symbol] || 23000
       const gap2  = STRIKE_GAP[symbol] || 50
+
+      // If we received real data (ltpMap has entries), treat this as authoritative.
+      // Don't fall back to BS placeholder values — show 0 (—) for missing strikes.
+      // BS placeholders are only used before ANY real data arrives.
+      const hasRealData = Object.keys(ltpMap).length > 0
+      const existingHasRealData = (chain.options[targetExpiry] || []).some(
+        r => r.ce_token || r.pe_token  // has real token = came from real data
+      )
+
       chain.options[targetExpiry] = allStrikes.map(strike => {
         const existing = (chain.options[targetExpiry] || []).find(r => r.strike === strike)
         const e = ltpMap[strike] || {}
+        // Only use existing value if it came from real data (has a token),
+        // not if it's a BS placeholder (no token)
+        const existingCeIsReal = existing?.ce_token != null
+        const existingPeIsReal = existing?.pe_token != null
         return {
           strike,
-          ce_ltp:   e.ce  > 0 ? parseFloat(e.ce.toFixed(2))  : (existing?.ce_ltp  || 0),
-          pe_ltp:   e.pe  > 0 ? parseFloat(e.pe.toFixed(2))  : (existing?.pe_ltp  || 0),
+          ce_ltp:   e.ce > 0 ? parseFloat(e.ce.toFixed(2))
+                  : (existingCeIsReal ? (existing?.ce_ltp || 0) : 0),
+          pe_ltp:   e.pe > 0 ? parseFloat(e.pe.toFixed(2))
+                  : (existingPeIsReal ? (existing?.pe_ltp || 0) : 0),
           ce_prev:  existing?.ce_prev || 0,
           pe_prev:  existing?.pe_prev || 0,
           ce_token: e.ce_token || existing?.ce_token || null,
@@ -693,11 +708,25 @@ export const useStore = create((set, get) => ({
     activeBaskets: s.activeBaskets.map(b => b.id === id ? { ...b, pnl } : b),
   })),
 
-  updateBasketTargets: (id, profit, loss) => set(s => ({
-    activeBaskets: s.activeBaskets.map(b =>
-      b.id === id ? { ...b, lockedProfit: profit, lockedLoss: loss } : b
-    ),
-  })),
+  updateBasketTargets: (id, profit, loss) => {
+    // Update frontend store immediately
+    set(s => ({
+      activeBaskets: s.activeBaskets.map(b =>
+        b.id === id ? { ...b, lockedProfit: profit, lockedLoss: loss } : b
+      ),
+    }))
+    // Sync to backend monitor so SL/target works even when browser is closed
+    const { token } = get()
+    const API = import.meta.env.VITE_API_URL || 'https://api.baskettrading.in'
+    fetch(`${API}/api/baskets/${id}/update_targets`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ locked_profit: profit, locked_loss: loss }),
+    }).catch(e => console.warn('[STORE] update_targets sync failed:', e))
+  },
 
   closeBasket: (id) => set(s => ({
     activeBaskets: s.activeBaskets.filter(b => b.id !== id),
