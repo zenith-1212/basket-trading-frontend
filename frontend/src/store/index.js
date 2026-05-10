@@ -708,6 +708,43 @@ export const useStore = create((set, get) => ({
     activeBaskets: s.activeBaskets.map(b => b.id === id ? { ...b, pnl } : b),
   })),
 
+  updateBasketOrder: (basketId, updatedOrder) => {
+    // Update frontend store
+    set(s => ({
+      activeBaskets: s.activeBaskets.map(b =>
+        b.id !== basketId ? b : {
+          ...b,
+          orders: b.orders.map(o =>
+            o.trd_symbol === updatedOrder.trd_symbol ? { ...o, ...updatedOrder } : o
+          ),
+        }
+      ),
+    }))
+    // Sync entry_price to backend monitor
+    const { token } = get()
+    const API = import.meta.env.VITE_API_URL || 'https://api.baskettrading.in'
+    fetch(`${API}/api/baskets/${basketId}/update_orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ orders: [updatedOrder] }),
+    }).catch(e => console.warn('[STORE] updateBasketOrder sync failed:', e))
+    // Also update backend monitor in-memory
+    fetch(`${API}/api/baskets/${basketId}/update_entry_price`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        trd_symbol:  updatedOrder.trd_symbol,
+        entry_price: updatedOrder.entry_price,
+      }),
+    }).catch(() => {})
+  },
+
   updateBasketTargets: (id, profit, loss) => {
     // Update frontend store immediately
     set(s => ({
