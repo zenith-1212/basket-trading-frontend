@@ -247,6 +247,14 @@ export function usePriceFeed() {
             applyChainSnapshot(msg.symbol, msg.expiry, msg.chain, msg.expiry_ymd)
             return
           }
+          // Backend monitor closed a basket (SL/target hit while browser was open)
+          if (msg.type === 'basket_closed') {
+            const { closeBasket, fetchActiveBaskets } = useStore.getState()
+            closeBasket(msg.basket_id)
+            // Refresh from DB to pick up any auto-loop re-entry basket
+            setTimeout(() => fetchActiveBaskets(), 1500)
+            return
+          }
           if (msg.type !== 'tick') return
 
           if (msg.symbol && msg.ltp) {
@@ -316,8 +324,17 @@ export function usePriceFeed() {
         const res = await fetch(`${API_URL}/api/prices/spot`, { headers })
         if (!res.ok) return
         const data = await res.json()
+        const { spotPrices } = useStore.getState()
         for (const [sym, price] of Object.entries(data)) {
-          if (typeof price === 'number' && price > 0) updateSpot(sym, price)
+          if (typeof price !== 'number' || price <= 0) continue
+          // Sanity check: reject if >10% away from last known good value
+          // This prevents stale post-market ticks from corrupting the display
+          const prev = spotPrices[sym] || 0
+          if (prev > 0 && Math.abs(price - prev) / prev > 0.10) {
+            console.warn(`[SPOT] Rejected suspicious ${sym} price: ${price} (prev: ${prev})`)
+            continue
+          }
+          updateSpot(sym, price)
         }
       } catch {}
     }
