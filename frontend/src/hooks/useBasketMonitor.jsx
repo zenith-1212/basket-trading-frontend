@@ -8,23 +8,11 @@
  *   POST /api/baskets/{id}/exit        ← updates DB status (CANCELLED/SL_HIT/etc.)
  *
  * It did NOT call:
- *   POST /api/orders/exit_basket       ← sends actual exit orders to Kotak/broker API
  *
  * So the UI showed "trade closed" but the broker position was still open.
  * Manual exit worked because the UI triggered the broker call directly.
  *
  * FIXES IN v7.0:
- * 1. squareOffWithBroker()  — calls /api/orders/exit_basket FIRST with correct params:
- *      • correct trd_symbol (from order.trd_symbol, same as entry)
- *      • correct quantity
- *      • reversed side (BUY→SELL, SELL→BUY)
- *      • current LTP for price protection
- *      • order_type: "MKT" (market order for immediate fill)
- * 2. Waits for broker ACK before updating DB status.
- * 3. Logs partial fills and failures — does NOT silently succeed.
- * 4. On broker failure, keeps closingRef locked to prevent double-exit loop,
- *    but alerts user with a toast so they can manually close if needed.
- * 5. PAPER mode: skips broker call, goes straight to DB + UI update.
  */
 
 import { useEffect, useRef, useCallback } from 'react'
@@ -42,15 +30,12 @@ export function useBasketMonitor() {
     activeBaskets,
     basketPrices,
     updateBasketPnl,
-    closeBasket,
-    adjustBalance,
     token,
   } = useStore()
 
   const basketsRef  = useRef(activeBaskets)
   const pricesRef   = useRef(basketPrices)
   const tokenRef    = useRef(token)
-  const closingRef  = useRef(new Set())
   const lastPnlRef  = useRef({})
   const lastSyncRef = useRef({})
 
@@ -80,124 +65,8 @@ export function useBasketMonitor() {
     }
   }, [authHeaders])
 
-  // ── Square off: broker first → DB close → UI update → auto-loop re-entry ──
-  const squareOffWithBroker = useCallback(async (basket, exitType, pnl) => {
-    const orders   = basket.orders || []
-    const isPaper  = (basket.mode || '').toUpperCase() === 'PAPER'
-    // autoLoop per basket — MANUAL exits never re-enter regardless
-    const autoLoop = exitType === 'MANUAL' ? false : (basket.autoLoop ?? false)
-
-    // ── STEP 1: Send exit orders to broker (LIVE mode only) ─────────────────
-    if (!isPaper && orders.length > 0) {
-      const prices = pricesRef.current
-
-      // Send ORIGINAL side — backend exit_basket reverses it (BUY→SELL, SELL→BUY)
-      // DO NOT reverse here — doing so causes double-reversal = wrong direction order
-      const exitLegs = orders.map(order => ({
-        symbol:      order.symbol,
-        strike:      order.strike,
-        option_type: order.option_type,
-        expiry:      order.expiry,
-        side:        order.side,       // original side — backend will reverse
-        lot_count:   order.lot_count ?? 1,     // ← lot info for broker engine
-        quantity:    order.quantity,           // final qty = lot_count × lot_size
-        order_type:  'MKT',
-        product:     'MIS',
-        trd_symbol:  order.trd_symbol || '',
-        ltp:         prices[order.trd_symbol] || order.entry_price || 0,
-        price:       prices[order.trd_symbol] || order.entry_price || 0,
-      }))
-
-      console.log('[MONITOR] Sending exit orders to broker:', exitLegs)
-
-      try {
-        const brokerRes = await fetch(`${API()}/api/orders/exit_basket`, {
-          method:  'POST',
-          headers: authHeaders(),
-          body:    JSON.stringify({
-            basket_id: basket.id,
-            exit_type: exitType,
-            auto_loop: false,  // backend basket_monitor.py handles auto-loop
-            orders:    exitLegs,
-          }),
-        })
-
-        if (!brokerRes.ok) {
-          const errText = await brokerRes.text()
-          console.error('[MONITOR] Broker exit HTTP error:', brokerRes.status, errText)
-          toast.error(`⚠️ Broker exit failed (${brokerRes.status}). Check positions manually!`, { duration: 8000 })
-          // Keep closingRef LOCKED — don't retry, user must act manually
-          return false
-        }
-
-        const brokerData = await brokerRes.json()
-        console.log('[MONITOR] Broker exit response:', brokerData)
-
-        const exited = brokerData.exited ?? 0
-        const failed = brokerData.failed ?? 0
-
-        if (failed > 0) {
-          const failedSymbols = (brokerData.errors || [])
-            .map(e => e.leg?.trd_symbol || e.leg?.symbol || '?').join(', ')
-          toast.error(`⚠️ ${failed} leg(s) failed to exit: ${failedSymbols}. Check your demat!`, { duration: 10000 })
-        }
-
-        if (exited === 0 && failed > 0) {
-          toast.error('❌ All exit orders failed! Close positions manually in broker app.', { duration: 12000 })
-          return false
-        }
-
-        if (exited > 0) {
-          const label = exitType === 'TARGET_HIT' ? '✅ Target' : exitType === 'SL_HIT' ? '🛑 Stop-Loss' : '🔲 Manual'
-          toast.success(`${label} — ${exited}/${orders.length} leg(s) squared off`, { duration: 5000 })
-        }
-
-      } catch (networkErr) {
-        console.error('[MONITOR] Network error calling broker exit:', networkErr)
-        toast.error('❌ Network error during exit. Verify positions in broker app!', { duration: 10000 })
-        return false
-      }
-    } else if (isPaper) {
-      console.log('[MONITOR] PAPER mode — skipping broker exit call')
-    }
-
-    // ── STEP 2: Mark basket closed in DB + handle auto-loop re-entry ─────────
-    // Backend returns new_basket if auto_loop=true and re-entry was created in DB
-    let dbData = null
-    try {
-      const dbRes = await fetch(`${API()}/api/baskets/${basket.id}/exit`, {
-        method:  'POST',
-        headers: authHeaders(),
-        body:    JSON.stringify({
-          exit_pnl:  pnl,
-          exit_type: exitType,
-          auto_loop: false,  // backend basket_monitor.py handles auto-loop — never trigger from frontend
-        }),
-      })
-      if (dbRes.ok) {
-        dbData = await dbRes.json()
-      } else {
-        console.warn('[MONITOR] DB exit update failed:', dbRes.status, await dbRes.text())
-      }
-    } catch (e) {
-      console.warn('[MONITOR] DB exit call failed (non-fatal):', e)
-    }
-
-    // ── STEP 3: Close old basket in UI ───────────────────────────────────────
-    closeBasket(basket.id)
-    adjustBalance(pnl)
-    delete lastSyncRef.current[basket.id]
-    delete lastPnlRef.current[basket.id]
-
-    // ── STEP 4: Auto-loop is handled ENTIRELY by backend basket_monitor.py ──
-    // Do NOT place new orders or add baskets here.
-    // Backend will: exit old basket → create new DB basket → place broker orders
-    // → broadcast basket_closed WS message → frontend fetchActiveBaskets() picks up new basket.
-    // Frontend placing orders here caused DOUBLE orders every SL/target hit.
-
-    return true
-
-  }, [authHeaders, closeBasket, adjustBalance])
+  // squareOffWithBroker REMOVED — backend basket_monitor.py handles all SL/target exits.
+  // Frontend only displays PnL. Backend broadcasts basket_closed via WebSocket on exit.
 
   // ── Re-subscribe restored baskets after page reload ────────────────────────
   useEffect(() => {
@@ -227,8 +96,6 @@ export function useBasketMonitor() {
       const prices  = pricesRef.current
 
       for (const basket of baskets) {
-        if (closingRef.current.has(basket.id)) continue
-
         const orders = basket.orders || []
         if (orders.length === 0) continue
 
@@ -258,36 +125,13 @@ export function useBasketMonitor() {
           syncPnlToDB(basket.id, pnl)
         }
 
-        // Only auto-exit when ALL legs are priced to avoid premature triggers
-        if (!allPriced) continue
-
-        const target    = basket.lockedProfit ?? Infinity
-        const sl        = basket.lockedLoss   ?? Infinity
-        const hitTarget = target > 0 && pnl >=  target
-        const hitSL     = sl     > 0 && pnl <= -sl
-
-        if (hitTarget || hitSL) {
-          // Lock immediately to prevent re-entry on next 500ms tick
-          closingRef.current.add(basket.id)
-
-          const exitType = hitTarget ? 'TARGET_HIT' : 'SL_HIT'
-          const reason   = hitTarget
-            ? `🎯 Target ₹${target.toLocaleString()} hit — exiting basket...`
-            : `🔴 Stop-loss ₹${sl.toLocaleString()} hit — exiting basket...`
-
-          toast(reason, { duration: 3000 })
-
-          squareOffWithBroker(basket, exitType, pnl).then(succeeded => {
-            if (!succeeded) {
-              // Release lock after 30s on failure so user can retry manually
-              setTimeout(() => closingRef.current.delete(basket.id), 30_000)
-            }
-            // On success: basket removed from state by closeBasket — lock irrelevant
-          })
-        }
+        // NOTE: SL/target exit is handled ENTIRELY by backend basket_monitor.py
+        // Frontend only displays PnL — never triggers exits automatically.
+        // Backend broadcasts basket_closed via WebSocket when SL/target hits.
+        // This prevents double-exit race conditions.
       }
     }, POLL_MS)
 
     return () => clearInterval(timer)
-  }, [updateBasketPnl, syncPnlToDB, squareOffWithBroker])
+  }, [updateBasketPnl, syncPnlToDB])
 }
