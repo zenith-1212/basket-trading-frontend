@@ -250,9 +250,11 @@ export function usePriceFeed() {
           // Backend monitor closed a basket (SL/target hit while browser was open)
           if (msg.type === 'basket_closed') {
             const { closeBasket, fetchActiveBaskets } = useStore.getState()
+            // Remove basket from UI immediately so useBasketMonitor stops tracking it
             closeBasket(msg.basket_id)
-            // Refresh from DB to pick up any auto-loop re-entry basket
-            setTimeout(() => fetchActiveBaskets(), 1500)
+            // Wait 3s for backend to finish placing auto-loop entry orders
+            // before refreshing — prevents frontend from seeing old basket state
+            setTimeout(() => fetchActiveBaskets(), 3000)
             return
           }
           if (msg.type !== 'tick') return
