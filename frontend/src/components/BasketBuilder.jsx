@@ -216,7 +216,8 @@ export default function BasketBuilder() {
             client_basket_id: clientBasketId,
             orders: basket.map((o, i) => ({
               ...buildOrderPayload(o, {
-                entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+                // Use actual fill price from Kotak — falls back to live price if unavailable
+                entry_price: kotakData.results?.[i]?.fill_price || basketPrices[o.trd_symbol] || o.entry_price || 0,
                 order_id:    kotakData.results?.[i]?.order_id || '',
               }),
             })),
@@ -239,7 +240,7 @@ export default function BasketBuilder() {
           orders:  savedBasket?.orders || basket.map((o, i) => ({
             ...o,
             lot_count:   o.lot_count ?? 1,
-            entry_price: basketPrices[o.trd_symbol] || o.entry_price || 0,
+            entry_price: kotakData.results?.[i]?.fill_price || basketPrices[o.trd_symbol] || o.entry_price || 0,
             trd_symbol:  o.trd_symbol || '',
             order_id:    kotakData.results?.[i]?.order_id || '',
           })),
