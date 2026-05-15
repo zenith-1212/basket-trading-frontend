@@ -688,7 +688,7 @@ export const useStore = create((set, get) => ({
 
   lockedProfit:    3000,
   lockedLoss:      1500,
-  autoLoop:        true,
+  autoLoop:        false,
   setLockedProfit: (v) => set({ lockedProfit: v }),
   setLockedLoss:   (v) => set({ lockedLoss: v }),
   setAutoLoop:     (v) => set({ autoLoop: v }),
@@ -805,7 +805,7 @@ export const useStore = create((set, get) => ({
         })),
         lockedProfit: parseFloat(row.locked_profit) || 0,
         lockedLoss:   parseFloat(row.locked_loss)   || 0,
-        autoLoop:     row.auto_loop ?? true,
+        autoLoop:     false,  // always default OFF — user must turn on manually
         pnl:          parseFloat(row.current_pnl)   || 0,
         status:       'ACTIVE',
         mode:         row.mode || 'PAPER',
